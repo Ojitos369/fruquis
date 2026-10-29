@@ -1,0 +1,27 @@
+# entorno y compilados
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+*.spec
+
+# personajes: sprites y datos del usuario no se versionan (se llevan con Exportar / Importar en .zip)
+fruquis/characters/
+*.zip
+
+# secretos y registros
+.env
+.env.*
+*.log
+
+# editor, sistema y herramientas
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+.claude/settings.local.json
+.playwright-mcp/
+graphify-out/
