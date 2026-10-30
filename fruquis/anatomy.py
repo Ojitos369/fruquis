@@ -2,11 +2,10 @@
 describen al personaje con precisión y adaptan cada animación a su cuerpo (una serpiente repta, no camina; sin brazos, saluda con la cola)."""
 import json
 import re
-import subprocess
 import tempfile
 from pathlib import Path
 
-from . import binaries, chat, sprites, store
+from . import provider, sprites, store
 
 
 def reference_image(c: sprites.Character):
@@ -26,8 +25,7 @@ def analyze(cid: str, model: str | None = None) -> dict:
     """Pide a claude (viendo las imágenes) {identity, anatomy, actions} y lo guarda en el personaje. SystemExit si no se puede."""
     c = sprites.get(cid)
     img = reference_image(c)
-    exe = chat.claude_bin()
-    if not exe:
+    if not provider.chat_ready():
         raise SystemExit("No encuentro el CLI `claude` (elige su ruta en Ajustes).")
     if not img:
         raise SystemExit("El personaje no tiene ninguna imagen: carga primero la imagen general.")
@@ -46,10 +44,8 @@ def analyze(cid: str, model: str | None = None) -> dict:
             '- "actions": un objeto con una entrada por CADA animación de la lista, con la descripción del movimiento reescrita para ESTA anatomía '
             "(máximo 35 palabras cada una): usa solo las partes que tiene; si la acción base pide algo que no tiene (piernas, manos), sustitúyelo por lo "
             "equivalente en su cuerpo; conserva el espíritu de la acción.\n\nAnimaciones y descripción base:\n" + base)
-        r = subprocess.run([*binaries.argv(exe), "-p", "--model", model, "--effort", "medium", "--no-session-persistence", "--tools", "Read",
-                            "--allowedTools", "Read", "--add-dir", tmp], input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           timeout=240, cwd=tmp, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    m = re.search(r"\{.*\}", r.stdout, re.S)
+        out = provider.vision(prompt, [cp], model, timeout=240)
+    m = re.search(r"\{.*\}", out or "", re.S)
     try:
         d = json.loads(m.group()) if m else None
     except ValueError:

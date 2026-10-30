@@ -2,7 +2,6 @@
 del personaje; la IA (claude, con visión) propone nombre, velocidad y modo de cada fila. Sin Qt."""
 import json
 import re
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -10,7 +9,7 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 
-from . import binaries, chat, store
+from . import provider, store
 
 
 def _alpha(im: Image.Image) -> Image.Image:
@@ -68,8 +67,7 @@ def _split_run(band: np.ndarray) -> list:
 def ai_review(sheet: Image.Image, cands: list, model: str = "haiku"):
     """Pide a claude (viendo una hoja de contacto con cada pieza dudosa numerada) que decida, pieza por pieza, si es parte legítima del cuadro
     (gota, chispa, accesorio, punta de cola) o suciedad / un fragmento de otro cuadro. {id: True} = quitar. None si no hay respuesta útil."""
-    exe = chat.claude_bin()
-    if not exe:
+    if not provider.chat_ready():
         return None
     with tempfile.TemporaryDirectory() as tmp:
         img = Path(tmp) / "cuadros.png"
@@ -81,13 +79,8 @@ def ai_review(sheet: Image.Image, cands: list, model: str = "haiku"):
             "cabello, punta de cola, partícula de diseño) o \"remove\" si es un fragmento recortado de OTRO cuadro (forma cortada en seco en el borde, "
             "pedazo de otra pose), suciedad, ruido o un resto que no pertenece a este cuadro. Responde SOLO un objeto JSON, sin texto extra, con todos los "
             'números: {"1": "remove", "2": "keep"}')
-        try:
-            r = subprocess.run([*binaries.argv(exe), "-p", "--model", model, "--effort", "medium", "--no-session-persistence", "--tools", "Read",
-                                "--allowedTools", "Read", "--add-dir", tmp], input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               timeout=150, cwd=tmp, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        except subprocess.TimeoutExpired:
-            return None
-    m = re.search(r"\{.*\}", r.stdout, re.S)
+        out = provider.vision(prompt, [img], model, timeout=150)
+    m = re.search(r"\{.*\}", out or "", re.S)
     try:
         d = json.loads(m.group()) if m else None
     except ValueError:
@@ -280,16 +273,8 @@ def describe(path: str, rows: list, known: dict, model: str = "haiku") -> list |
             "Elige también fps (4-12) y mode: 'loop' (vuelve al primer cuadro), 'pingpong' (los cuadros van y vienen, típico de "
             "respirar o mecerse) o 'once'. Responde SOLO un arreglo JSON, sin texto extra, con un objeto por fila: "
             '[{"name":"sleeping","fps":6,"mode":"pingpong","rows":[0,1],"note":"qué se ve"}]. "rows" son los índices de fila (desde 0) que forman esa animación.')
-        exe = chat.claude_bin()
-        if not exe:
-            return None
-        try:
-            r = subprocess.run([exe, "-p", "--model", model, "--effort", "medium", "--no-session-persistence", "--tools", "Read", "--allowedTools", "Read", "--add-dir", tmp],
-                               input=prompt, capture_output=True, text=True, timeout=150, cwd=tmp,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        except subprocess.TimeoutExpired:
-            return None
-    m = re.search(r"\[.*\]", r.stdout, re.S)
+        out = provider.vision(prompt, [prev], model, timeout=150)
+    m = re.search(r"\[.*\]", out or "", re.S)
     try:
         arr = json.loads(m.group()) if m else None
     except ValueError:

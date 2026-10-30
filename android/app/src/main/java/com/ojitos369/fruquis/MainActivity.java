@@ -1,6 +1,7 @@
 package com.ojitos369.fruquis;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
@@ -13,7 +14,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
+import android.text.InputType;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -81,6 +84,15 @@ public class MainActivity extends Activity {
         imp.setText("Importar personaje (.zip)");
         imp.setOnClickListener(v -> startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE), 1));
         root.addView(imp);
+        LinearLayout ai = new LinearLayout(this);
+        Button talk = new Button(this), cfg = new Button(this);
+        talk.setText("Hablar");
+        talk.setOnClickListener(v -> talkDialog());
+        cfg.setText("Ajustes de IA");
+        cfg.setOnClickListener(v -> aiDialog());
+        ai.addView(talk, new LinearLayout.LayoutParams(0, -2, 1));
+        ai.addView(cfg, new LinearLayout.LayoutParams(0, -2, 1));
+        root.addView(ai);
         setContentView(root);
         pet.setOnClickListener(v -> play("waving", 2000));
         pet.load();
@@ -96,6 +108,49 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             Toast.makeText(this, "No se pudo importar: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
+    }
+
+    // ---- IA por API (Ai.java / provider.py) ----
+    void talkDialog() {
+        EditText t = new EditText(this);
+        new AlertDialog.Builder(this).setTitle("Dile algo").setView(t).setNegativeButton("Cancelar", null).setPositiveButton("Enviar", (d, w) -> {
+            play("talking", 120000);
+            new Thread(() -> {
+                String r;
+                try {
+                    r = new Ai(getSharedPreferences("ai", MODE_PRIVATE)).chat(t.getText().toString(),
+                        "Eres Fruquis, una mascota tierna. Responde siempre en español, máximo 3 frases.", null);
+                } catch (Exception e) {
+                    r = "No pude responder (" + e.getMessage() + ")";
+                }
+                String out = r;
+                runOnUiThread(() -> { until = System.currentTimeMillis() + 2000; status.setText(out); });
+            }).start();
+        }).show();
+    }
+
+    void aiDialog() {
+        Ai ai = new Ai(getSharedPreferences("ai", MODE_PRIVATE));
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setPadding(32, 16, 32, 0);
+        String[][] f = {{"chat", "kind", "Chat: formato (openai | anthropic)"}, {"chat", "url", "Chat: URL base (vacío = oficial)"}, {"chat", "key", "Chat: clave"},
+            {"chat", "model", "Chat: modelo (vacío = predeterminado)"}, {"image", "url", "Imágenes: URL base (vacío = OpenAI)"}, {"image", "key", "Imágenes: clave"},
+            {"image", "model", "Imágenes: modelo (vacío = gpt-image-1)"}};
+        EditText[] e = new EditText[f.length];
+        for (int i = 0; i < f.length; i++) {
+            e[i] = new EditText(this);
+            e[i].setHint(f[i][2]);
+            e[i].setText(ai.p.getString(f[i][0] + "_" + f[i][1], ""));
+            e[i].setSingleLine();
+            if (f[i][1].equals("key")) e[i].setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+            l.addView(e[i]);
+        }
+        new AlertDialog.Builder(this).setTitle("IA por API").setView(l).setNegativeButton("Cancelar", null).setPositiveButton("Guardar", (d, w) -> {
+            SharedPreferences.Editor ed = ai.p.edit();
+            for (int i = 0; i < f.length; i++) ed.putString(f[i][0] + "_" + f[i][1], e[i].getText().toString().trim());
+            ed.apply();
+        }).show();
     }
 
     File dir() { return new File(getFilesDir(), "character"); }

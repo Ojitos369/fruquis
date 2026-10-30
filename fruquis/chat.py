@@ -8,7 +8,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from . import binaries, control
+from . import binaries, control, provider
 
 PERSONA = ("Eres {name}, una mascota de escritorio ({desc}). Tierna, breve, "
            "responde siempre en español, máximo 3 frases. No pegues código largo.")
@@ -26,6 +26,7 @@ CTL = (" Puedes ver y controlar el escritorio con estos comandos de Bash (úsalo
 
 ERRORS = ("No encuentro el CLI", "Tardé demasiado", "No pude responder")
 _proc = None
+_cancelled = False  # la petición por API no se puede abortar: se descarta su respuesta
 
 
 def claude_bin() -> str | None:
@@ -38,6 +39,8 @@ def is_error(text: str) -> bool:
 
 def cancel():
     """Detiene la respuesta en curso (el chat la usa para el botón de parar)."""
+    global _cancelled
+    _cancelled = True
     if _proc and _proc.poll() is None:
         _proc.kill()
 
@@ -58,6 +61,15 @@ def ask(prompt: str, model: str = "haiku", timeout: int = 120, tools: bool = Fal
     """`claude -p`. `tools`: Bash; `image`: captura que puede leer; `desktop`: ver y controlar el escritorio. `on_phase(str)` se llama con
     thinking / reading / working / writing. `track` permite cancelarla con cancel() (devuelve "")."""
     global _proc
+    if provider.api_on("chat"):  # por API: solo texto y visión (sin Bash ni control del escritorio, que son del CLI)
+        global _cancelled
+        _cancelled = False
+        (on_phase or (lambda p: None))("thinking")
+        try:
+            out = provider.api_text(prompt, PERSONA.format(name=persona[0], desc=persona[1]), [image] if image else [], timeout=timeout)
+        except provider.AIError as e:
+            return f"No pude responder ({e})"
+        return "" if _cancelled else (out or "No pude responder (respuesta vacía)")
     exe = claude_bin()
     if not exe:
         return "No encuentro el CLI `claude`. Instálalo o elige su ruta en Ajustes."

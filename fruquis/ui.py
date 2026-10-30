@@ -485,8 +485,8 @@ class CatalogView(View):
         """Genera esta animación con el binario local de Codex (ChatGPT): usa la hoja neutral como referencia y, si falta, la crea primero."""
         from . import imagegen
         n, c = self.cur(), self.char()
-        if not imagegen.find_codex():
-            self.shell.toast("No encuentro Codex CLI. Elige su ruta en Ajustes.", 5000)
+        if not imagegen.provider.image_ready():
+            self.shell.toast("No hay generador de imágenes. Elige el binario de Codex o configura una API en Ajustes.", 5000)
             return self.shell.open("settings")
         text = sprites.prompt(c, n, background=store.get("prompt_bg", "#FF00FF"))
         self.btns["gen"].setEnabled(False)
@@ -1042,6 +1042,12 @@ class SettingsView(View):
         for tool, label, hint in (("claude", "Chat (Claude Code CLI)", "Responde en el chat, las ideas y analiza las hojas de sprites."),
                                   ("codex", "Generador de imágenes (Codex CLI · ChatGPT)", "Genera las animaciones y la hoja neutral.")):
             lay.addWidget(self.binary_row(tool, label, hint))
+        # IA por API (alternativa a los binarios)
+        lay.addSpacing(10)
+        lay.addWidget(QLabel("IA POR API", objectName="section"))
+        self.apis = {}
+        for what, label in (("chat", "Chat, ideas y análisis de hojas"), ("image", "Generador de imágenes")):
+            lay.addWidget(self.api_row(what, label))
         # general
         lay.addSpacing(10)
         lay.addWidget(QLabel("MASCOTA", objectName="section"))
@@ -1145,7 +1151,69 @@ class SettingsView(View):
         self.bins[tool] = (edit, st)
         return box
 
+    def api_row(self, what: str, label: str) -> QFrame:
+        """Usar un binario o una API (oficial o propia, con la misma forma que la de OpenAI / Anthropic) para chat o imágenes."""
+        box = QFrame(objectName="card")
+        v = QVBoxLayout(box)
+        v.setContentsMargins(14, 12, 14, 12)
+        v.setSpacing(8)
+        v.addWidget(QLabel(label))
+        mode = QComboBox()
+        mode.addItem("Binario local (CLI)", "binary")
+        mode.addItem("API", "api")
+        kind = QComboBox()
+        kind.addItem("Formato OpenAI (OpenAI o servidor propio)", "openai")
+        if what == "chat":
+            kind.addItem("Formato Anthropic (Claude o servidor propio)", "anthropic")
+        url, key, model = QLineEdit(), QLineEdit(), QLineEdit()
+        key.setEchoMode(QLineEdit.Password)
+        url.setPlaceholderText("URL base; vacío = servidor oficial")
+        key.setPlaceholderText("clave de la API (vacío = variable de entorno)")
+        model.setPlaceholderText("modelo; vacío = el predeterminado")
+        for w in (mode, kind, url, key, model):
+            v.addWidget(w)
+        d = QLabel("Con API el chat solo conversa y ve imágenes (sin terminal ni control del escritorio). La clave se guarda en ~/.fruquis/config.json.", objectName="dim")
+        d.setWordWrap(True)
+        v.addWidget(d)
+        row = QHBoxLayout()
+        st = QLabel(objectName="hint")
+        st.setWordWrap(True)
+        row.addWidget(button("Probar", lambda: self.test_api(what), "primary"))
+        row.addWidget(st, 1)
+        v.addLayout(row)
+        self.apis[what] = (mode, kind, url, key, model, st)
+        for w in (mode, kind):
+            w.currentIndexChanged.connect(lambda *_: self.save_api(what))
+        for w in (url, key, model):
+            w.editingFinished.connect(lambda: self.save_api(what))
+        return box
+
+    def save_api(self, what: str):
+        mode, kind, url, key, model, _ = self.apis[what]
+        ai = dict(store.get("ai", {}) or {})
+        ai[what] = {"mode": mode.currentData(), "kind": kind.currentData(), "url": url.text().strip(), "key": key.text().strip(), "model": model.text().strip()}
+        store.put("ai", ai)
+
+    def test_api(self, what: str):
+        from . import provider
+        self.save_api(what)
+        st = self.apis[what][5]
+        st.setText("Probando…")
+        self.job.run(lambda: provider.test(what), lambda r, e: st.setText(f"✗ {e}" if e else ("✓ " if r[0] else "✗ ") + r[1].lstrip("✓ ")))
+
     def enter(self, **kw):
+        for what, (mode, kind, url, key, model, st) in self.apis.items():
+            c = (store.get("ai", {}) or {}).get(what) or {}
+            for w in (mode, kind, url, key, model):
+                w.blockSignals(True)
+            mode.setCurrentIndex(max(0, mode.findData(c.get("mode", "binary"))))
+            kind.setCurrentIndex(max(0, kind.findData(c.get("kind", "openai"))))
+            url.setText(c.get("url", ""))
+            key.setText(c.get("key", ""))
+            model.setText(c.get("model", ""))
+            for w in (mode, kind, url, key, model):
+                w.blockSignals(False)
+            st.setText("")
         for tool, (edit, st) in self.bins.items():
             edit.setPlaceholderText(f"automático: {binaries.detect(tool) or 'no encontrado'}")
             edit.setText(store.get(binaries.SETTING[tool], ""))
@@ -1202,7 +1270,7 @@ class SettingsView(View):
                                 "see": self.see.isChecked(), "control": self.ctl.isChecked()})
 
     def reset(self):
-        for key in ("bin_claude", "bin_codex", "scale", "prompt_bg", "chat_opts", "parallel", "verify_identity", "ai_clean"):
+        for key in ("bin_claude", "bin_codex", "ai", "scale", "prompt_bg", "chat_opts", "parallel", "verify_identity", "ai_clean"):
             store.put(key, None)
         self.pet.set_scale(0.6)
         self.enter()
@@ -1289,8 +1357,8 @@ class GenBatchView(View):
         names = [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count()) if self.list.item(i).checkState() == Qt.Checked]
         if not names:
             return self.shell.toast("Marca al menos una animación")
-        if not imagegen.find_codex():
-            self.shell.toast("No encuentro Codex CLI. Elige su ruta en Ajustes.", 5000)
+        if not imagegen.provider.image_ready():
+            self.shell.toast("No hay generador de imágenes. Elige el binario de Codex o configura una API en Ajustes.", 5000)
             return self.shell.open("settings")
         c = sprites.get(self.cid)
         if not (c.neutral or c.source or sprites.reference(c)):

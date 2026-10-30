@@ -601,7 +601,7 @@ class Pet(QWidget):
         win = f"{c['title'][:50]} ({self.ctx_kind})" if c else "ninguna"
         self.talk()
         self.say(f"**Ventana:** {win}  \nCPU {psutil.cpu_percent()}% · RAM {psutil.virtual_memory().percent}%  \n"
-                 f"Animaciones: {len(self.have)} · claude: {'sí' if chat.claude_bin() else 'no'}", 9000)
+                 f"Animaciones: {len(self.have)} · claude: {'sí' if chat.provider.chat_ready() else 'no'}", 9000)
 
     def ideas(self):
         c = self.ctx

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from . import anatomy, binaries, importer, sprites, store
+from . import anatomy, binaries, importer, provider, sprites, store
 
 WIN = os.name == "nt"
 NOWIN = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -30,6 +30,8 @@ def argv(exe: str) -> list:
 
 def status() -> tuple:
     """(listo, texto) para mostrar en la interfaz."""
+    if provider.api_on("image"):
+        return provider.test("image")
     exe = find_codex()
     if not exe:
         return False, "No encontré Codex CLI. Instálalo (npm i -g @openai/codex) e inicia sesión con `codex login`."
@@ -59,6 +61,12 @@ def cancel(key=None):
 def generate(prompt: str, refs: list, timeout: int = 900, key=None, labels: list | None = None) -> bytes:
     """Pide UNA imagen a ChatGPT (Codex) con imágenes de referencia; devuelve los bytes del PNG generado. Seguro en paralelo: la imagen de cada
     ejecución se identifica por el «session id» que imprime Codex (cada sesión guarda las suyas en su propia carpeta)."""
+    if provider.api_on("image"):
+        head = ("Imágenes de referencia adjuntas, en este orden:\n" + "\n".join(f"{i}. {t}" for i, t in enumerate(labels, 1)) + "\n\n") if labels else ""
+        try:
+            return provider.api_image(head + prompt, refs, timeout)
+        except provider.AIError as e:
+            raise SystemExit(f"La API de imágenes falló: {e}")
     exe = find_codex()
     if not exe:
         raise SystemExit(status()[1])
@@ -123,9 +131,7 @@ LABEL_SOURCE = "IMAGEN GENERAL original del personaje: referencia de identidad; 
 
 def identity_check(ref_path, result_path, model: str | None = None) -> tuple:
     """La IA (visión) compara la referencia con lo generado: ¿es el MISMO personaje? Devuelve (mismo, motivo). Sin IA disponible, se da por bueno."""
-    from . import chat
-    exe = chat.claude_bin()
-    if not exe or not store.get("verify_identity", True):
+    if not provider.chat_ready() or not store.get("verify_identity", True):
         return True, ""
     a, b = Image.open(ref_path).convert("RGB"), Image.open(result_path).convert("RGB")
     h = 420
@@ -139,13 +145,10 @@ def identity_check(ref_path, result_path, model: str | None = None) -> tuple:
         prompt = (f"Mira la imagen {img}: a la IZQUIERDA está la referencia del personaje y a la DERECHA una imagen generada. ¿La derecha muestra al MISMO "
                   "personaje que la izquierda (mismo diseño, especie, colores, rasgos distintivos, accesorios y proporciones)? Sé estricto: otro personaje, "
                   'otra criatura o cambios importantes de diseño cuentan como NO. Responde SOLO JSON: {"same": true|false, "reason": "qué difiere"}')
-        try:
-            r = subprocess.run([*binaries.argv(exe), "-p", "--model", model or store.get("chat_opts", {}).get("model", "haiku"), "--effort", "medium",
-                                "--no-session-persistence", "--tools", "Read", "--allowedTools", "Read", "--add-dir", tmp], input=prompt, capture_output=True,
-                               text=True, encoding="utf-8", errors="replace", timeout=120, cwd=tmp, creationflags=NOWIN)
-        except subprocess.TimeoutExpired:
-            return True, ""
-    m = re.search(r"\{.*\}", r.stdout, re.S)
+        out = provider.vision(prompt, [img], model or store.get("chat_opts", {}).get("model", "haiku"), timeout=120)
+    if out is None:
+        return True, ""
+    m = re.search(r"\{.*\}", out, re.S)
     try:
         d = json.loads(m.group())
     except (AttributeError, ValueError):

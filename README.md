@@ -150,6 +150,19 @@ Ver y controlar el escritorio: en macOS hay que conceder *Accesibilidad* y *Grab
 
 ---
 
+## 🔌 IA: binarios o API
+
+Cada función (chat · imágenes) puede usar un **binario local** (`claude`, `codex`) o una **API**: la oficial (OpenAI, Anthropic) o un **servidor propio** con el mismo formato (solo cambia la URL base). Se elige en **Ajustes → IA por API** (en Android: *Ajustes de IA*).
+
+| | Formato | Rutas |
+|---|---|---|
+| Chat y visión | OpenAI (`/chat/completions`) o Anthropic (`/v1/messages`) | URL vacía = servidor oficial |
+| Imágenes | OpenAI (`/images/generations`, `/images/edits` con referencias) | URL vacía = `api.openai.com` |
+
+La clave puede ir en Ajustes o en `FRUQUIS_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`. Con API el chat solo conversa y ve imágenes (sin terminal ni control del escritorio). Prueba: `python tests/test_provider.py`.
+
+---
+
 ## 🔐 Seguridad del chat
 
 - **Ideas** y **Estado** nunca ejecutan comandos.
