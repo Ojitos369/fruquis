@@ -11,9 +11,9 @@ KINDS = {
 }
 
 
-def _run(*cmd) -> str:
+def _run(*cmd, timeout=1) -> str:
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=1, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
     except Exception:
         return ""
 
@@ -29,6 +29,8 @@ def active() -> dict | None:
     """{title, cls, x, y, w, h} de la ventana en primer plano, o None."""
     if sys.platform == "win32":
         return _win()
+    if sys.platform == "darwin":
+        return _mac()
     if os.environ.get("DISPLAY"):
         return _x11()
     return None
@@ -83,3 +85,94 @@ def _win() -> dict | None:
     except Exception:
         cls = ""
     return {"id": str(hwnd), "title": buf.value, "cls": cls, "x": r.left, "y": r.top, "w": r.right - r.left, "h": r.bottom - r.top}
+
+
+MAC_FRONT = """tell application "System Events"
+  set p to first application process whose frontmost is true
+  set n to name of p
+  try
+    set w to first window of p
+    set {x, y} to position of w
+    set {ww, hh} to size of w
+    return n & "|" & (name of w) & "|" & x & "|" & y & "|" & ww & "|" & hh
+  on error
+    return n & "|||||"
+  end try
+end tell"""
+MAC_LIST = """tell application "System Events"
+  set out to ""
+  repeat with p in (every application process whose visible is true)
+    try
+      repeat with w in windows of p
+        set {x, y} to position of w
+        set {ww, hh} to size of w
+        set out to out & (name of p) & "|" & (name of w) & "|" & x & "|" & y & "|" & ww & "|" & hh & linefeed
+      end repeat
+    end try
+  end repeat
+  return out
+end tell"""
+
+
+def _mac_row(line: str) -> dict | None:
+    """Fila «app|título|x|y|ancho|alto» de osascript → ventana (requiere el permiso de Accesibilidad / Automatización de macOS)."""
+    p = line.strip().split("|")
+    if len(p) < 6 or not p[0]:
+        return None
+    try:
+        x, y, w, h = (int(float(v)) for v in p[2:6])
+    except ValueError:
+        return {"id": p[0], "title": p[1] or p[0], "cls": p[0], "x": 0, "y": 0, "w": 0, "h": 0}
+    return {"id": p[0], "title": p[1] or p[0], "cls": p[0], "x": x, "y": y, "w": w, "h": h}
+
+
+def _mac() -> dict | None:
+    r = _run("osascript", "-e", MAC_FRONT, timeout=6)
+    w = _mac_row(r) if r else None
+    return w if w and w["w"] > 0 else None
+
+
+def list_windows() -> list:
+    """Ventanas abiertas: [{id, title, x, y, w, h}]. X11 (wmctrl) y Windows."""
+    if sys.platform == "darwin":
+        rows = (_mac_row(l) for l in _run("osascript", "-e", MAC_LIST, timeout=8).splitlines())
+        return [w for w in rows if w and w["w"] > 0]
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        u, out = ctypes.windll.user32, []
+
+        def cb(hwnd, _):
+            if u.IsWindowVisible(hwnd):
+                buf = ctypes.create_unicode_buffer(256)
+                u.GetWindowTextW(hwnd, buf, 256)
+                if buf.value.strip():
+                    r = wintypes.RECT()
+                    u.GetWindowRect(hwnd, ctypes.byref(r))
+                    out.append({"id": str(hwnd), "title": buf.value, "x": r.left, "y": r.top, "w": r.right - r.left, "h": r.bottom - r.top})
+            return True
+        u.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)(cb), 0)
+        return out
+    out = []
+    for line in _run("wmctrl", "-lG").splitlines():
+        p = line.split(None, 7)
+        if len(p) >= 8 and p[1] != "-1":
+            out.append({"id": p[0], "title": p[7], "x": int(p[2]), "y": int(p[3]), "w": int(p[4]), "h": int(p[5])})
+    return out
+
+
+def focus(fragment: str) -> str | None:
+    """Enfoca la primera ventana cuyo título contenga `fragment`; devuelve su título o None."""
+    hit = next((w for w in list_windows() if fragment.lower() in w["title"].lower()), None)
+    if not hit:
+        return None
+    if sys.platform == "darwin":
+        _run("osascript", "-e", f'tell application "{hit.get("cls") or hit["id"]}" to activate', timeout=6)
+    elif sys.platform == "win32":
+        import ctypes
+        ctypes.windll.user32.ShowWindow(int(hit["id"]), 9)
+        ctypes.windll.user32.SetForegroundWindow(int(hit["id"]))
+    else:
+        _run("wmctrl", "-i", "-a", hit["id"])
+    return hit["title"]

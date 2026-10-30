@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame, QHBox
                                QVBoxLayout, QWidget)
 
 from . import chat, sprites, store
+from .app import clip
 
 BG, PANEL, USER, TEXT, DIM, ACCENT, LINE = "#16161c", "#1f1f27", "#34304a", "#ececf1", "#8d8da0", "#8a6ae0", "#2d2d3a"
 CSS = f"""
@@ -103,6 +104,7 @@ class ChatView(QWidget):
         self.setObjectName("root")
         self.setStyleSheet(CSS)
         self.shell, self.pet, self.hist, self.last_user = shell, shell.pet, [], ""
+        self.cid, self.log = "", []
         self.waiting, self.cancelled, self.typing, self.n, self.welcome = False, False, None, 0, None
         self.reveal_t, self.reveal_full, self.reveal_lb, self.last_actions = None, "", None, None
         outer = QHBoxLayout(self)  # contenido centrado con ancho máximo, como ChatGPT o Claude
@@ -165,10 +167,19 @@ class ChatView(QWidget):
                               toolTip="Si está activa, el personaje puede ejecutar comandos Bash para cumplir lo que pidas")
         self.term.setChecked(opts.get("tools", True))
         self.term.toggled.connect(self.save_opts)
+        self.see = QCheckBox("Ver ventana", objectName="opt", cursor=Qt.PointingHandCursor,
+                             toolTip="Antes de responder toma una captura de la ventana activa para que el personaje vea su contenido")
+        self.see.setChecked(opts.get("see", False))
+        self.ctl = QCheckBox("Controlar", objectName="opt", cursor=Qt.PointingHandCursor,
+                             toolTip="El personaje puede ver y controlar tu escritorio: mover el ratón, hacer clic y escribir. Desmárcalo para impedirlo.")
+        self.ctl.setChecked(opts.get("control", False))
+        self.see.toggled.connect(self.save_opts)
+        self.ctl.toggled.connect(self.save_opts)
+        self.ctl.toggled.connect(self.control_notice)
         self.go = QPushButton("➤", objectName="send", cursor=Qt.PointingHandCursor)
         self.go.setFixedSize(30, 30)
         self.go.clicked.connect(self.on_go)
-        for w in (self.model, self.effort, self.term):
+        for w in (self.model, self.effort, self.term, self.see, self.ctl):
             row.addWidget(w)
         row.addStretch(1)
         row.addWidget(self.go)
@@ -179,16 +190,24 @@ class ChatView(QWidget):
         self.rev_t = QTimer(self, interval=16, timeout=self.step_reveal)
         QShortcut(QKeySequence("Ctrl+N"), self, self.reset)
         bridge.reply.connect(self.got)
-        self.refresh_char()
-        self.empty()
+        self.refresh_char()  # carga la conversación guardada del personaje
         self.sync()
 
     def save_opts(self, *_):
-        store.put("chat_opts", {"model": self.model.currentData(), "effort": self.effort.currentData(), "tools": self.term.isChecked()})
+        store.put("chat_opts", {"model": self.model.currentData(), "effort": self.effort.currentData(), "tools": self.term.isChecked(),
+                                "see": self.see.isChecked(), "control": self.ctl.isChecked()})
+
+    def control_notice(self, on: bool):
+        self.state.setText("⚠ controla tu escritorio" if on else "en línea")
+        if on:
+            self.pet.say("Ojo: con «Controlar» activo puedo mover el ratón y teclear. Pulsa ■ para detenerme.", 6000)
 
     # ---- presentación ----
     def refresh_char(self):
         c = self.pet.char
+        if c.id != self.cid and not self.busy():  # otro personaje: su propia conversación
+            self.cid = c.id
+            self.restore()
         self.who.setText(c.name)
         self.pic.setPixmap(avatar(sprites.reference(c), 38))
         self.box.setPlaceholderText(f"Escríbele a {c.name}…")
@@ -308,6 +327,7 @@ class ChatView(QWidget):
         elif self.waiting:
             self.cancelled = True
             chat.cancel()
+            self.pet.clear_busy()
             self.set_waiting(False)
             row, _ = self.add("*Detenido.*", False)
 
@@ -318,8 +338,35 @@ class ChatView(QWidget):
             w = self.col.takeAt(0).widget()
             if w:
                 w.deleteLater()
-        self.hist, self.last_actions = [], None
+        self.hist, self.last_actions, self.log = [], None, []
+        self.save_log()
         self.empty()
+
+    # ---- persistencia: la conversación de cada personaje se guarda en ~/.fruquis/chats ----
+    def record(self, mine: bool, text: str):
+        self.log = (self.log + [{"mine": mine, "text": text}])[-200:]
+        self.save_log()
+
+    def save_log(self):
+        store.write(store.chat_path(self.cid), self.log)
+
+    def restore(self):
+        """Vuelve a dibujar la conversación guardada del personaje actual (o la pantalla de bienvenida si no hay)."""
+        while self.col.count() > 1:
+            w = self.col.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        self.welcome, self.last_actions, self.hist = None, None, []
+        self.log = store.read(store.chat_path(self.cid), []) or []
+        if not self.log:
+            return self.empty()
+        name = self.pet.char.name
+        row = None
+        for m in self.log:
+            row, _ = self.add(m["text"], m["mine"])
+            self.hist.append(f"{'Tú' if m['mine'] else name}: {m['text']}")
+        if not self.log[-1]["mine"]:
+            self.add_actions(row, chat.is_error(self.log[-1]["text"]))
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -330,6 +377,16 @@ class ChatView(QWidget):
     # ---- conversación ----
     def enter(self, **kw):
         self.refresh_char()
+        o = store.get("chat_opts", {})  # los valores por defecto se cambian también desde Ajustes
+        for cb, key, default in ((self.model, "model", "haiku"), (self.effort, "effort", "medium")):
+            cb.blockSignals(True)
+            cb.setCurrentIndex(max(0, cb.findData(o.get(key, default))))
+            cb.blockSignals(False)
+        for cb, key, default in ((self.term, "tools", True), (self.see, "see", False), (self.ctl, "control", False)):
+            cb.blockSignals(True)
+            cb.setChecked(o.get(key, default))
+            cb.blockSignals(False)
+        self.state.setText("⚠ controla tu escritorio" if self.ctl.isChecked() else "en línea")
         self.box.setFocus()
 
     def send(self, text=None):
@@ -339,6 +396,7 @@ class ChatView(QWidget):
         self.box.clear()
         self.add(text, True)
         self.hist.append(f"Tú: {text}")
+        self.record(True, text)
         self.last_user = text
         self.ask()
 
@@ -349,10 +407,34 @@ class ChatView(QWidget):
             self.last_actions.deleteLater()
             self.last_actions = None
         self.cancelled = False
+        image = self.snapshot() if (self.see.isChecked() or self.ctl.isChecked()) else None
         self.set_waiting(True)
-        self.pet.talk(3)
+        self.pet.set_busy("reading" if image else "thinking")
         self.pet.ask_async(ctx + "\n".join(self.hist[-10:]) + f"\n{self.pet.char.name}:", "chat", model=self.model.currentData(),
-                           effort=self.effort.currentData(), tools=self.term.isChecked())
+                           effort=self.effort.currentData(), tools=self.term.isChecked(), image=image, desktop=self.ctl.isChecked())
+
+    def snapshot(self):
+        """Captura de la última ventana externa. Oculta un instante las ventanas de Fruquis para que no tapen el contenido."""
+        from . import control
+        from PySide6.QtCore import QThread
+        shell, fl = self.shell, self.shell.float
+        shown = (shell.isVisible(), bool(fl and fl.isVisible()))
+        for w in (shell, fl, self.pet, self.pet.bubble):
+            if w is not None:
+                w.hide()
+        QApplication.processEvents()
+        QThread.msleep(260)
+        try:
+            path, _ = control.capture(self.pet.ctx)
+        except Exception:  # noqa: BLE001 - sin captura se responde igual, solo con el título de la ventana
+            path = None
+        self.pet.show()
+        if shown[0]:
+            shell.show()
+        if shown[1]:
+            fl.show()
+        self.box.setFocus()
+        return str(path) if path else None
 
     def regenerate(self):
         if self.busy() or not self.last_user:
@@ -365,6 +447,9 @@ class ChatView(QWidget):
                     break
         if self.hist and not self.hist[-1].startswith("Tú:"):
             self.hist.pop()
+        if self.log and not self.log[-1]["mine"]:
+            self.log.pop()
+            self.save_log()
         self.last_actions = None
         self.ask()
 
@@ -385,13 +470,17 @@ class ChatView(QWidget):
         elif dest == "chat":
             if self.cancelled:
                 self.cancelled = False
+                self.pet.clear_busy()
                 return
             self.set_waiting(False)
+            self.pet.set_busy("writing")
             err = chat.is_error(text)
             row, lb = self.add("", False, err)
             self.reveal_row, self.reveal_lb, self.reveal_full, self.reveal_err, self.reveal_pos = row, lb, text, err, 0
             self.hist.append(f"{self.pet.char.name}: {text}")
-            self.pet.say(text if len(text) < 200 else text[:197] + "…", 8000)
+            if not err:
+                self.record(False, text)
+            self.pet.say(clip(text), 8000)
             self.rev_t.start()
             self.sync()
 
@@ -410,4 +499,5 @@ class ChatView(QWidget):
         self.reveal_lb.setText(self.reveal_full)
         self.add_actions(self.reveal_row, self.reveal_err)
         self.reveal_lb = None
+        self.pet.clear_busy()
         self.sync()

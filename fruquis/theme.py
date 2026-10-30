@@ -5,6 +5,10 @@ CSS = f"""
 * {{ font-family:'Inter','Segoe UI','Noto Sans',sans-serif; font-size:13px; }}
 QWidget {{ color:{TEXT}; }}
 QDialog, QMessageBox, QInputDialog, QFileDialog, QWidget#win {{ background:{BG}; }}
+QWidget#body {{ background:{BG}; }}
+QScrollArea {{ background:{BG}; border:none; }}
+QFrame#float {{ background:{BG}; border:1px solid #3a3a4c; border-radius:18px; }}
+QFrame#floatbar {{ background:transparent; border:none; }}
 QFrame#side {{ background:{PANEL}; border-right:1px solid {LINE}; }}
 QFrame#card {{ background:{PANEL}; border:1px solid {LINE}; border-radius:16px; }}
 QLabel {{ background:transparent; }}
@@ -33,7 +37,9 @@ QPushButton#danger:hover {{ background:#3a2430; }}
 QPushButton#pill {{ border-radius:16px; padding:8px 12px; }}
 
 QListWidget {{ background:transparent; border:none; outline:none; }}
-QListWidget::item {{ padding:9px 12px; margin:2px 8px; border-radius:10px; color:{TEXT}; }}
+QListWidget::item {{ padding:9px 12px; margin:2px 8px; border-radius:10px; }}
+QListWidget::indicator {{ width:16px; height:16px; border-radius:5px; border:1px solid #55556a; background:transparent; }}
+QListWidget::indicator:checked {{ background:{ACCENT}; border-color:{ACCENT}; }}
 QListWidget::item:hover {{ background:{RAISED}; }}
 QListWidget::item:selected {{ background:#2e2a46; color:white; }}
 
@@ -46,6 +52,12 @@ QSpinBox::up-button, QSpinBox::down-button {{ width:0; border:none; }}
 QProgressBar {{ background:{RAISED}; border:none; border-radius:4px; max-height:8px; min-height:8px; }}
 QProgressBar::chunk {{ background:{ACCENT}; border-radius:4px; }}
 
+QCheckBox {{ spacing:8px; }}
+QCheckBox::indicator {{ width:16px; height:16px; border-radius:5px; border:1px solid #55556a; background:transparent; }}
+QCheckBox::indicator:checked {{ background:{ACCENT}; border-color:{ACCENT}; }}
+QSlider::groove:horizontal {{ height:6px; background:{RAISED}; border-radius:3px; }}
+QSlider::sub-page:horizontal {{ background:{ACCENT}; border-radius:3px; }}
+QSlider::handle:horizontal {{ width:16px; height:16px; margin:-5px 0; border-radius:8px; background:white; }}
 QMenu {{ background:{PANEL}; border:1px solid {LINE}; border-radius:12px; padding:6px; }}
 QMenu::item {{ padding:7px 18px; border-radius:8px; }}
 QMenu::item:selected {{ background:{ACCENT}; color:white; }}

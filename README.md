@@ -29,7 +29,16 @@
 | 💡 **Ideas según tu ventana** | Un clic y te sugiere qué hacer según lo que tienes abierto. |
 | 🎞️ **Animaciones a tu medida** | Importa hojas de sprites de **cualquier tamaño**: la IA detecta los cuadros, los limpia, los nombra y elige fps y modo. |
 | 🧩 **Muchos personajes** | Cada mascota es un *personaje* con sus hojas y su historia. Crea, cambia y **llévalos entre equipos en un .zip**. |
-| 🪄 **Prompts listos** | ¿Falta una animación? Genera el prompt (plantilla con variables y fondo a elección) y la imagen de referencia para tu generador de imágenes. |
+| 🪄 **Prompts listos** | ¿Falta una animación? Genera el prompt (plantilla con variables y fondo a elección), o un **prompt general** para todas las que faltan (cada una como imagen separada, respetando las variables de cada una). |
+| ⚡ **Genera varias a la vez** | En el catálogo → *Generar varias…*: marca faltantes y/o animaciones a reemplazar y se generan **en paralelo y en segundo plano** (la mascota avisa al terminar). Revisa una por una o aplica todas las listas. |
+| ⚙️ **Ajustes** | Binarios del chat (`claude`) y del generador (`codex`) con detectar/probar, tamaño de la mascota, generaciones en paralelo, fondo de los prompts y valores del chat. |
+| 🧬 **Identidad y anatomía** | La IA mira al personaje y escribe cómo es y qué cuerpo tiene (una serpiente repta, un pulpo usa tentáculos, sin brazos saluda con la cola). Se incluye en **todos** los prompts y adapta cada animación a su anatomía; es editable. |
+| 🔒 **Siempre fiel al personaje** | Cada generación lleva adjuntas la **hoja neutral** y la imagen general (si no hay hoja, se crea antes), con instrucciones explícitas; la IA verifica que el resultado sea el mismo personaje y reintenta si no. |
+| 🧼 **Cuadros limpios** | Cada pieza de la hoja se asigna a un solo cuadro (no se corta con líneas rectas) y la IA revisa pieza por pieza lo dudoso: ya no se cuelan pedazos del cuadro vecino. |
+| 🔁 **Mejora con chat** | ¿El reverso salió mal o no se distingue? Describe qué corregir y se genera una **nueva versión** a partir de la actual; itera las veces que haga falta, vuelve a una versión anterior y quédate con la mejor (hoja neutral o cualquier animación). |
+| 💬 **Chat flotante** | Doble clic en la mascota (o menú → *Chat flotante*): una ventanita junto a ella que la sigue. Mientras responde **se queda quieta** y muestra lo que hace: pensando, leyendo, trabajando, escribiendo. |
+| 👁️ **Ve y controla el escritorio** | Con *Ver ventana* el chat recibe una captura de tu ventana activa; con *Controlar* (desactivado por defecto) puede mover el ratón, hacer clic, teclear y cambiar de ventana. Cada acción queda en `~/.fruquis/ctl.log`. |
+| ✨ **Genera con ChatGPT** | Un clic pasa el prompt a **ChatGPT vía Codex CLI** y recoge la imagen para armar la animación. Usa la **hoja neutral** (4 vistas) como referencia para mantener todos los detalles; si no existe, la crea primero. |
 
 ---
 
@@ -64,6 +73,13 @@ Un personaje es una carpeta con su `character.json`, sus hojas de sprites y una 
 
 Si el id ya existe se importa con sufijo (`-2`, `-3`…) para no pisar nada. El import **valida** el zip antes de escribir: rutas seguras, solo `.json`, `.png` y `.md`, tamaños acotados e imágenes reales.
 
+**Consistencia: imagen general y hoja neutral**
+
+- **Imagen general:** una imagen de referencia del personaje que cargas tú (Personajes → *Imagen general y hoja neutral*, o al crear el personaje).
+- **Hoja neutral:** 4 vistas (frontal, trasera, lateral izquierda y lateral derecha) respetando todos los detalles. Se **genera con ChatGPT** a partir de la imagen general o la cargas propia. Es solo de referencia: no aparece en el catálogo de animaciones.
+- Al generar cualquier animación se adjunta la hoja neutral; si falta, **se crea primero** automáticamente. El resultado se recorta (fondo `#FF00FF`), se divide en cuadros y pasa por una pantalla de revisión antes de aplicarse.
+- Requiere [Codex CLI](https://github.com/openai/codex) con sesión de ChatGPT (`codex login`). La pantalla lo comprueba.
+
 **Agregar animaciones**
 
 - Menú → **Personajes… → Catálogo de animaciones…**: vista previa animada, ajustar fps y modo, **probar en la mascota**, **reemplazar**, **eliminar** o agregar las que faltan.
@@ -89,6 +105,10 @@ Las que falten usan una **animación de respaldo** (por ejemplo `sleeping` → `
 ./run.sh prompt sleeping --background "#FF00FF"   # prompt para generar una animación
 ./run.sh add hoja.png                      # agregar hoja (la IA nombra las animaciones)
 ./run.sh add hoja.png --names a,b --no-ai  # nombrarlas tú, una por fila
+./run.sh source imagen.png                 # imagen general del personaje
+./run.sh neutral --generate                # hoja neutral con ChatGPT (o --file hoja.png)
+./run.sh generate sleeping                 # genera una animación con ChatGPT y la agrega
+./run.sh codex                             # comprobar Codex CLI
 ./run.sh export [id] --out personaje.zip   # exportar un personaje
 ./run.sh import personaje.zip [--overwrite]
 ```
@@ -112,11 +132,20 @@ Para Linux, `./build.sh` genera `dist/fruquis`.
 
 ---
 
+## 🖥️ Linux, Windows y macOS
+
+Los binarios (`claude` para el chat, `codex` para generar imágenes) se buscan en este orden: la ruta elegida en **Ajustes**, `CLAUDE_BIN` / `CODEX_BIN`, el PATH, los lugares habituales de cada sistema (npm, Homebrew, nvm, volta, scoop, WinGet…) y, en macOS/Linux, el PATH de tu shell de login (para cuando la app se abre con doble clic). En Windows los atajos `.cmd` de npm se ejecutan directo con `node`, y los prompts viajan por la entrada estándar para que `cmd.exe` no rompa comillas ni saltos de línea. Pruebas: `.venv/bin/python tests/test_binaries.py` (simula los tres sistemas).
+
+Ver y controlar el escritorio: en macOS hay que conceder *Accesibilidad* y *Grabación de pantalla*; en Linux funciona con X11 (en Wayland puede no funcionar).
+
+---
+
 ## 🔐 Seguridad del chat
 
 - **Ideas** y **Estado** nunca ejecutan comandos.
 - El **chat** puede usar Bash **solo si la casilla “Terminal” está activa** (visible en el compositor) y ejecuta sin pedir confirmación en tu carpeta personal. Desactívala si no la quieres.
-- Necesita el CLI `claude` en el `PATH`.
+- **Controlar el escritorio** está desactivado por defecto; se activa con su casilla en el chat o en Ajustes. Límite de 60 acciones por minuto y confirmación pedida antes de acciones destructivas.
+- Necesita el CLI `claude` (ruta configurable en Ajustes).
 
 ---
 

@@ -7,8 +7,8 @@ import time
 from pathlib import Path
 
 import psutil
-from PySide6.QtCore import QObject, QPoint, QPointF, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QCursor, QPainter, QPixmap, QTransform
+from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QCursor, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QTransform
 from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMenu, QMessageBox, QPushButton, QWidget
 
 from . import chat, sprites, store, theme, winctx
@@ -20,8 +20,23 @@ KIND_SAY = {"browser": "¡Veo tu navegador!", "terminal": "La terminal… ¿qué
 DO_ANIM = {"comer": "eating", "limpiar": "cleaning", "jugar": "playing", "dormir": "sleeping", "mimar": "pampered"}
 
 
+def clip(text: str, n: int = 220) -> str:
+    """Recorta un texto markdown para la burbuja sin dejar marcas abiertas (**, `) que se verían como asteriscos sueltos."""
+    if len(text) <= n:
+        return text
+    cut = text[:n].rsplit(" ", 1)[0].rstrip(" ,;:.\n")
+    for mark in ("**", "`"):
+        if cut.count(mark) % 2:
+            cut += mark
+    return cut + "…"
+
+
+BUSY_ANIM = {"thinking": "review", "reading": "reading", "working": "typing", "writing": "typing"}  # fase de la IA → animación
+
+
 class Bridge(QObject):
     reply = Signal(str, str)  # (destino, texto)
+    phase = Signal(str)       # thinking / reading / working / writing mientras responde
 
 
 class Seg:
@@ -63,27 +78,63 @@ def window_track(w: dict, scr: QRect, d: float) -> Track | None:
     return Track(segs, False, w["id"])
 
 
+TAIL = 11  # alto de la flechita del globo
+
+
 class Bubble(QWidget):
+    """Globo de diálogo con flechita que apunta a la mascota (abajo si el globo queda encima de ella, arriba si queda debajo)."""
+    FILL, EDGE = QColor("#fffbe9"), QColor("#8a7bd6")
+
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.label = QLabel(self)
+        self.label.setTextFormat(Qt.MarkdownText)  # las respuestas llegan en markdown: negritas, listas, código…
+        self.label.setOpenExternalLinks(True)
         self.label.setWordWrap(True)
-        self.label.setMaximumWidth(260)
-        self.label.setStyleSheet("background:#fffbe9;color:#2b2140;border:2px solid #8a7bd6;border-radius:10px;padding:6px 9px;font-size:13px")
+        self.label.setMaximumWidth(280)
+        self.label.setStyleSheet("background:transparent;color:#2b2140;padding:8px 12px;font-size:13px")
         self.timer = QTimer(self, singleShot=True, timeout=self.hide)
+        self.above, self.tail_x = True, 20
 
     def say(self, text: str, anchor: QRect, ms: int = 6000):
         self.label.setText(text)
         self.label.adjustSize()
-        self.resize(self.label.size())
+        bw, bh = self.label.width(), self.label.height()
+        self.resize(bw, bh + TAIL)
         scr = (QApplication.screenAt(anchor.center()) or QApplication.primaryScreen()).availableGeometry()
-        x = min(max(anchor.center().x() - self.width() // 2, scr.left()), scr.right() - self.width())
-        y = anchor.top() - self.height() - 4
-        self.move(x, y if y >= scr.top() else anchor.bottom() + 4)
+        x = min(max(anchor.center().x() - bw // 2, scr.left()), scr.right() - bw)
+        y = anchor.top() - self.height() - 2
+        self.above = y >= scr.top()  # si no cabe encima, va debajo con la flecha hacia arriba
+        if not self.above:
+            y = anchor.bottom() + 2
+        self.label.move(0, 0 if self.above else TAIL)
+        self.tail_x = max(18, min(anchor.center().x() - x, bw - 18))  # la punta señala el centro de la mascota
+        self.move(x, y)
+        self.update()
         self.show()
         self.timer.start(ms)
+
+    def paintEvent(self, _):
+        bw, bh = self.label.width(), self.label.height()
+        top = 0 if self.above else TAIL
+        body = QRectF(1.5, top + 1.5, bw - 3, bh - 3)
+        path = QPainterPath()
+        path.addRoundedRect(body, 12, 12)
+        tx = self.tail_x
+        if self.above:
+            tri = QPolygonF([QPointF(tx - 9, body.bottom() - 1), QPointF(tx + 9, body.bottom() - 1), QPointF(tx, body.bottom() + TAIL - 2)])
+        else:
+            tri = QPolygonF([QPointF(tx - 9, body.top() + 1), QPointF(tx + 9, body.top() + 1), QPointF(tx, body.top() - TAIL + 2)])
+        tail = QPainterPath()
+        tail.addPolygon(tri)
+        tail.closeSubpath()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(self.FILL)
+        p.setPen(QPen(self.EDGE, 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.drawPath(path.united(tail))  # el contorno de la unión no marca la base de la flecha: se ve un solo globo
 
 
 class Pet(QWidget):
@@ -101,13 +152,18 @@ class Pet(QWidget):
         self.active_at, self.hop_at, self.low_at, self.save_at = time.monotonic(), 0.0, 0.0, time.monotonic()
         self.dir, self.mirror, self.hop, self.last_id = 1, False, None, None
         self.vx, self.samples, self.pamper_until = 0.0, [], 0.0
+        self.hop_off = 0.0  # altura (px) del salto real mientras suena la animación «jumping»
+        self.busy_phase, self.followers = None, []  # mientras la IA responde la mascota se queda quieta y muestra lo que hace
+        bridge.phase.connect(self.on_phase)
+        bridge.reply.connect(self.on_reply)
         self.load_character(char)
         self.wave()
         QTimer(self, interval=33, timeout=self.tick).start()
         QTimer(self, interval=1500, timeout=self.poll).start()
 
     # ---- personaje ----
-    def load_character(self, c: sprites.Character):
+    def load_character(self, c: sprites.Character, remember: bool = False):
+        """Carga un personaje. `remember` lo guarda como el activo (solo cuando el usuario lo elige; al arrancar no se sobrescribe)."""
         self.char, self.have = c, c.anims
         self.w, self.h = int(c.cell[0] * self.scale), int(c.cell[1] * self.scale)
         self.D = max(self.w, self.h)
@@ -116,9 +172,21 @@ class Pet(QWidget):
         self.care = Care(store.HOME / "care" / f"{c.id}.json")
         self.scr = (QApplication.screenAt(self.pos()) or QApplication.primaryScreen()).availableGeometry()
         self.screen_t, self.win = screen_track(self.scr), None
-        self.attach("screen", 0, min(self.scr.width() * 0.7, self.scr.width() - self.D), 1)
+        frac = self.c.x() / self.scr.width() if hasattr(self, "c") else store.get("pos", 0.7)  # al cambiar de personaje se queda donde estaba
+        self.attach("screen", 0, max(0.0, min(frac * self.scr.width(), self.scr.width() - self.D)), 1)
         self.anim = ""
-        store.put("active", c.id)
+        if remember:
+            store.put("active", c.id)
+
+    def set_scale(self, scale: float):
+        """Cambia el tamaño de la mascota al instante (se conserva el personaje y su posición)."""
+        self.care.save()
+        self.scale = scale
+        self.load_character(self.char)
+
+    def save_pos(self):
+        if hasattr(self, "c") and self.scr.width():
+            store.put("pos", round(max(0.0, min(1.0, (self.c.x() - self.scr.left()) / self.scr.width())), 4))
 
     def refresh_character(self, c: sprites.Character):
         """Recarga animaciones tras agregar, reemplazar o borrar, sin mover a la mascota."""
@@ -178,7 +246,7 @@ class Pet(QWidget):
     def center(self) -> QPointF:
         sg = self.seg
         p = sg.a + QPointF(sg.d[0], sg.d[1]) * self.s
-        return p + QPointF(*sg.n) * (self.h / 2)
+        return p + QPointF(*sg.n) * (self.h / 2 + self.hop_off)
 
     def place(self):
         c = self.center() if self.attached else self.c
@@ -225,13 +293,17 @@ class Pet(QWidget):
                 else:
                     self.fi = (self.fi + step) % n if a["loop"] else min(self.fi + step, n - 1)
         self.care.advance(dt)
-        if now - self.save_at > 60:
+        if now - self.save_at > 30:
             self.save_at = now
             self.care.save()
+            self.save_pos()
             if (w := self.care.worst()) and now - self.low_at > 300:
                 self.low_at = now
                 self.say({"hambre": "Tengo hambre… 🍙", "limpieza": "Necesito un baño 🫧", "diversion": "Estoy aburrida 🎾", "energia": "Tengo sueño 💤"}[w[0]])
         st = self.state
+        if self.busy_phase and st in ("idle", "walk", "once", "sleep"):  # responde: no se mueve
+            self.state = st = "busy"
+            self.target = None
         if st == "drag":
             self.play("dragged")
         elif st == "fall":
@@ -245,6 +317,12 @@ class Pet(QWidget):
                 self.land(prev, self.c.y() + self.h / 2)
         elif st == "hop":
             self.hop_step(now)
+        elif st == "busy":
+            self.mirror = False
+            if self.busy_phase:
+                self.play(BUSY_ANIM.get(self.busy_phase, "review"))
+            else:
+                self.state, self.until = "idle", now + 2
         elif st == "walk":
             self.advance_along(dt)
             if self.state == "walk":
@@ -256,7 +334,14 @@ class Pet(QWidget):
                 self.state, self.until = "idle", now + random.uniform(2, 6)
         elif st == "idle":
             self.think(now)
+        self.hop_off = 0.0
+        if self.attached and self.anim == "jumping" and self.state in ("once", "idle", "walk"):
+            # la animación de brincar tiene que brincar: el cuerpo sube y baja con los cuadros (agacharse → impulso → aire → caer)
+            n = self.have["jumping"]["frames"]
+            self.hop_off = self.h * 0.55 * math.sin(math.pi * (((self.fi + self.acc) % n) / n))
         self.place()
+        for f in self.followers:
+            f()
         self.update()
 
     def face(self):
@@ -422,6 +507,11 @@ class Pet(QWidget):
             self.c = QPointF(g.x() - self.hold.x() + self.D / 2, g.y() - self.hold.y() + self.D / 2)
             self.samples = (self.samples + [(time.monotonic(), g.x(), g.y())])[-8:]
 
+    def mouseDoubleClickEvent(self, e):
+        if f := self.ui.get("float"):
+            self.press = None
+            f()
+
     def mouseReleaseEvent(self, e):
         self.active_at = time.monotonic()
         if self.dragging:
@@ -449,10 +539,24 @@ class Pet(QWidget):
         for name in sorted(self.have):
             if name != sprites.LOOK:
                 sub.addAction(QAction(name, sub, triggered=lambda _=False, n=name: self.preview(n)))
-        for label, fn in (("Chat", self.ui.get("chat")), ("Cuidar", self.ui.get("care")), ("Personajes…", self.ui.get("chars")),
+        for label, fn in (("Chat", self.ui.get("chat")), ("Chat flotante", self.ui.get("float")), ("Cuidar", self.ui.get("care")), ("Personajes…", self.ui.get("chars")),
                           ("Saludar", self.wave), ("Salir", QApplication.quit)):
             m.addAction(QAction(label, m, triggered=fn or (lambda: None)))
         m.exec(at)
+
+    def set_busy(self, phase: str | None = "thinking"):
+        self.busy_phase = phase
+
+    def clear_busy(self):
+        self.busy_phase = None
+
+    def on_phase(self, phase: str):
+        if self.busy_phase is not None:
+            self.busy_phase = phase
+
+    def on_reply(self, dest: str, text: str):
+        if dest != "chat":  # el chat suspende el estado ocupado cuando termina de escribir la respuesta
+            self.clear_busy()
 
     def preview(self, name: str, secs: float | None = None):
         """Reproduce una animación del personaje un rato (menú Animación y catálogo)."""
@@ -496,7 +600,7 @@ class Pet(QWidget):
         c = self.ctx
         win = f"{c['title'][:50]} ({self.ctx_kind})" if c else "ninguna"
         self.talk()
-        self.say(f"Ventana: {win}\nCPU {psutil.cpu_percent()}% · RAM {psutil.virtual_memory().percent}%\n"
+        self.say(f"**Ventana:** {win}  \nCPU {psutil.cpu_percent()}% · RAM {psutil.virtual_memory().percent}%  \n"
                  f"Animaciones: {len(self.have)} · claude: {'sí' if chat.claude_bin() else 'no'}", 9000)
 
     def ideas(self):
@@ -511,6 +615,8 @@ class Pet(QWidget):
         """Pregunta en un hilo; el resultado vuelve por bridge.reply. Solo el chat (dest='chat') puede ejecutar comandos, si el usuario lo permite."""
         opts.setdefault("tools", False)
         opts.setdefault("persona", (self.char.name, self.char.description))
+        opts.setdefault("on_phase", self.bridge.phase.emit)
+        self.set_busy("thinking")
         threading.Thread(target=lambda: self.bridge.reply.emit(dest, chat.ask(prompt, track=dest == "chat", **opts)), daemon=True).start()
 
 
@@ -551,6 +657,11 @@ class FloatButton(QPushButton):
         if self.moved:
             self.move(g - self.off)
 
+    def mouseDoubleClickEvent(self, e):
+        if f := self.ui.get("float"):
+            self.press = None
+            f()
+
     def mouseReleaseEvent(self, e):
         if self.moved:
             self.clamp()
@@ -560,10 +671,10 @@ class FloatButton(QPushButton):
         self.press = None
 
 
-def run(scale: float = 0.6):
+def run(scale: float | None = None):
     from .chatui import ChatView
     from .shell import MainWindow
-    from .ui import CareView, CatalogView, CharactersView, NewCharView, PromptView, ReviewView
+    from .ui import CareView, CatalogView, CharactersView, NewCharView, AllPromptView, GenBatchView, NeutralPromptView, ProfileView, RefineView, PromptView, SettingsView, RefsView, ReviewView
 
     app = QApplication([])
     theme.apply(app)
@@ -578,20 +689,32 @@ def run(scale: float = 0.6):
         except SystemExit as e:
             QMessageBox.warning(None, "Fruquis", str(e))
             return
-    pet = Pet(sprites.get(store.get("active", "")), scale, bridge)
+    pet = Pet(sprites.get(store.get("active", "")), scale or store.get("scale", 0.6), bridge)
     shell = MainWindow(pet)
     for name, view in (("chat", ChatView(shell, bridge)), ("care", CareView(shell)), ("chars", CharactersView(shell)), ("catalog", CatalogView(shell)),
-                       ("prompt", PromptView(shell)), ("review", ReviewView(shell)), ("newchar", NewCharView(shell))):
+                       ("prompt", PromptView(shell)), ("review", ReviewView(shell)), ("newchar", NewCharView(shell)), ("refs", RefsView(shell)), ("allprompt", AllPromptView(shell)), ("neutralprompt", NeutralPromptView(shell)), ("settings", SettingsView(shell)), ("genbatch", GenBatchView(shell)), ("refine", RefineView(shell)), ("profile", ProfileView(shell))):
         shell.add_view(name, view)
 
     def toggle_chat():
-        if shell.current() == "chat":
+        if shell.float_open():
+            shell.close_float()
+        elif shell.current() == "chat":
             shell.hide()
         else:
             shell.open("chat", near=btn)
+    # avisos de la mascota cuando las generaciones en segundo plano terminan
+    def on_job(j):
+        if j.status == "lista":
+            pet.say(f"«{j.anim}» lista ✨ Revísala en Generar animaciones", 5000)
+        elif j.status == "error":
+            pet.say(f"No pude generar «{j.anim}»", 5000)
+    shell.gen.finished.connect(on_job)
+    shell.gen.all_done.connect(lambda ok, bad: pet.say(f"¡Terminé! {ok} lista(s)" + (f", {bad} con error" if bad else "") + " ✨", 7000))
     btn = FloatButton(toggle_chat)
-    pet.ui = {"chat": lambda: shell.open("chat"), "care": lambda: shell.open("care"), "chars": lambda: shell.open("chars")}
+    pet.ui = {"chat": lambda: shell.open("chat"), "float": shell.toggle_float, "care": lambda: shell.open("care"), "chars": lambda: shell.open("chars")}
+    pet.followers.append(shell.follow_float)
     app.aboutToQuit.connect(pet.care.save)
+    app.aboutToQuit.connect(pet.save_pos)
     btn.show()
     pet.show()
     app.exec()
