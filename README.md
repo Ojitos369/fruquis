@@ -57,6 +57,16 @@ Doble clic en **`fruquis.vbs`** → arranca **sin terminal**. La primera vez abr
 
 > Los personajes **no vienen en el repositorio**. En una instalación nueva, Fruquis te pide un `.zip` de personaje al abrir (ver [Personajes](#-personajes)).
 
+### Android
+
+App con la mascota animada, el tamagotchi y la importación de personajes (.zip). El APK lo compila el workflow **android** (Actions → artefacto `fruquis-apk`) o en local con:
+
+```bash
+gradle -p android assembleDebug     # android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+Instálalo (permite "orígenes desconocidos") y usa **Importar personaje (.zip)** con un zip exportado desde el escritorio. El chat con IA, el control del escritorio y la generación de animaciones son solo de escritorio.
+
 ---
 
 ## 🧸 Personajes

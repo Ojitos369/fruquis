@@ -25,3 +25,5 @@ Thumbs.db
 .claude/settings.local.json
 .playwright-mcp/
 graphify-out/
+.gradle/
+local.properties
