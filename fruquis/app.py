@@ -241,15 +241,15 @@ class Pet(QWidget):
         p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         p.translate(self.D / 2, self.D / 2)
-        sg = self.seg
-        if self.attached and sg.rot != 0 and self.anim in WALL_ANIMS:
+        sg = self.seg if self.attached else None  # al caer de una ventana que ya no está, el tramo no existe
+        if sg and sg.rot != 0 and self.anim in WALL_ANIMS:
             # −x local → hacia la pared (x local → al aire, n), cabeza (−y local) → hacia donde avanza: sube, baja o cruza el techo de frente
             w, t = sg.n, (self.dir * sg.d[0], self.dir * sg.d[1])
             if self.anim == "clinging" and abs(sg.rot) == 90:  # quieta en la pared: de pie, sin voltearse de cabeza
                 t = (0, -1)
             p.setTransform(QTransform(w[0], w[1], -t[0], -t[1], 0, 0), True)
         else:
-            p.rotate(sg.rot if self.attached else 0)
+            p.rotate(sg.rot if sg else 0)
             if self.mirror:
                 p.scale(-1, 1)
         if time.monotonic() < self.pamper_until:  # mimos: se aprieta y estira como si la acariciaran
@@ -564,7 +564,7 @@ class Pet(QWidget):
     # ---- ventana activa ----
     def poll(self):
         c = winctx.active()
-        if c and ("fruquis" in c["cls"].lower() or c["title"].startswith("Fruquis") or "python" in c["cls"].lower()):
+        if c and ("fruquis" in c["cls"].lower() or c["title"].startswith("Fruquis") or "python" in c["cls"].lower() or self.own(c["id"])):
             return
         self.ctx, kind = c, winctx.kind(c)
         now = time.monotonic()
@@ -592,6 +592,14 @@ class Pet(QWidget):
                     self.say_at[kind] = now
                     self.say(KIND_SAY[kind])
         self.ctx_kind = kind
+
+    @staticmethod
+    def own(wid: str) -> bool:
+        """¿Es una ventana de Fruquis (chat flotante, menú…)? Su WM_CLASS puede ser «app.py» y sin título: se compara el id nativo."""
+        try:
+            return int(wid, 0) in {int(w.winId()) for w in QApplication.topLevelWidgets() if w.isVisible()}
+        except ValueError:  # macOS da el nombre de la app, no un id
+            return False
 
     def refresh_win(self, c: dict):
         tr = window_track(c, self.scr, self.D)
