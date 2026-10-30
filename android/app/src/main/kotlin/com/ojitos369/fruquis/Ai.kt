@@ -126,8 +126,9 @@ object Place {
 
 /** Personalidad del personaje y animaciones pedidas por la IA. Paridad con fruquis/chat.py (persona_prompt, split_anim) y fruquis/personality.py. */
 object Persona {
-    private const val ANIM = " Tienes estas animaciones: %s. Si el usuario te pide hacer algo que puedes mostrar con una de ellas (bañarte, comer, dormir, jugar, " +
-        "saludar…) o en tu respuesta dices que lo haces, termina la respuesta con [[anim:NOMBRE]] (una sola, con el nombre exacto). Si ninguna corresponde, no pongas nada."
+    private const val ANIM = " Tienes estas animaciones: %s. En CADA respuesta revisa si alguna va con lo que dices o con lo que pasa en la conversación (te piden " +
+        "bañarte o limpiarte, comer, dormir, jugar, te saludan, te mimas, celebras…) y, si una encaja, termina la respuesta con [[anim:NOMBRE]] (una sola, " +
+        "con el nombre exacto): hazla aunque en el texto bromees, te quejes o digas que lo harás después. Si ninguna encaja, no pongas nada."
     // de locomoción o internas: en el piso se ven mal (chat.NO_ACT)
     private val NO_ACT = setOf("running-right", "running-left", "dragged", "falling", "climbing", "clinging", "listening", Sprite.LOOK)
     private val TAG = Regex("""\[\[\s*anim\s*:\s*([\w-]+)\s*]]""")

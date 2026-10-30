@@ -16,9 +16,9 @@ from . import binaries, control, machine, place, provider, sprites, store
 PERSONA = ("Eres {name}, una mascota de escritorio ({desc}). {who}breve, "
            "responde siempre en español, máximo 3 frases. No pegues código largo.")
 WHO = "Tu personalidad: {p} Responde SIEMPRE con esa personalidad (actitud, forma de hablar, muletillas), "
-ANIM = (" Tienes estas animaciones: {list}. Si el usuario te pide hacer algo que puedes mostrar con una de ellas (bañarte, comer, dormir, jugar, "
-        "saludar…) o en tu respuesta dices que lo haces, termina la respuesta con [[anim:NOMBRE]] (una sola, con el nombre exacto). Si ninguna "
-        "corresponde, no pongas nada.")
+ANIM = (" Tienes estas animaciones: {list}. En CADA respuesta revisa si alguna va con lo que dices o con lo que pasa en la conversación (te piden "
+        "bañarte o limpiarte, comer, dormir, jugar, te saludan, te mimas, celebras…) y, si una encaja, termina la respuesta con [[anim:NOMBRE]] (una sola, "
+        "con el nombre exacto): hazla aunque en el texto bromees, te quejes o digas que lo harás después. Si ninguna encaja, no pongas nada.")
 NO_ACT = {"running-right", "running-left", "dragged", "falling", "climbing", "clinging", "listening", "look"}  # de locomoción o internas: en el piso se ven mal
 TAG = re.compile(r"\[\[\s*anim\s*:\s*([\w-]+)\s*\]\]")
 
@@ -26,9 +26,13 @@ TAG = re.compile(r"\[\[\s*anim\s*:\s*([\w-]+)\s*\]\]")
 def persona_prompt(persona: tuple) -> str:
     """(nombre, descripción[, personalidad[, animaciones]]) → prompt de sistema del personaje. Igual que Persona.system en Ai.kt."""
     name, desc, pers, anims = (*persona, "", ())[:4]
+    return PERSONA.format(name=name, desc=desc, who=WHO.format(p=pers.strip()) if pers.strip() else "Tierna, ") + anim_prompt(anims)
+
+
+def anim_prompt(anims) -> str:
+    """Lista de animaciones que la IA puede pedir con [[anim:…]] ("" si no hay)."""
     acts = [n for n in anims if n not in NO_ACT]
-    return (PERSONA.format(name=name, desc=desc, who=WHO.format(p=pers.strip()) if pers.strip() else "Tierna, ")
-            + (ANIM.format(list=", ".join(f"{n} ({sprites.WANTED[n][1] if n in sprites.WANTED else sprites.label(n)})" for n in acts)) if acts else ""))
+    return ANIM.format(list=", ".join(f"{n} ({sprites.WANTED[n][1] if n in sprites.WANTED else sprites.label(n)})" for n in acts)) if acts else ""
 
 
 def split_anim(text: str, have) -> tuple:
@@ -133,7 +137,7 @@ def ask(prompt: str, model: str = "haiku", timeout: int = 120, tools: bool = Fal
         return "No encuentro el CLI `claude`. Instálalo o elige su ruta en Ajustes."
     emit = on_phase or (lambda p: None)
     see = bool(image or refs or desktop)
-    system = (persona_prompt(persona) + (ACT if (tools or desktop) else "") + (SEE if see else "")
+    system = (persona_prompt(persona[:3]) + (ACT if (tools or desktop) else "") + (SEE if see else "")
               + (CTL.format(p=control.prefix()) if desktop else "")
               + (" Escritorios virtuales de Windows: `key win+ctrl+right` / `key win+ctrl+left` (para ir al primero, varias veces a la izquierda y luego avanza; «el segundo "
                  "escritorio» casi siempre es un escritorio virtual, no un monitor). Las órdenes llegan dictadas y pueden venir mal transcritas: si no tienen sentido, "
@@ -143,6 +147,7 @@ def ask(prompt: str, model: str = "haiku", timeout: int = 120, tools: bool = Fal
     browser = bool(store.get("chat_opts", {}).get("browser"))  # casilla «Navegador» del chat: extensión Claude in Chrome
     if browser:
         system += BROWSER
+    system += anim_prompt((*persona, "", ())[3])  # al final: tras las instrucciones largas de herramientas se le olvidaba
     if see:  # el usuario dejó ver: además de la captura, qué hay abierto y qué suena (no depende de que la ventana activa sea la que pregunta)
         prompt = control.overview() + "\n" + prompt
     if image:
