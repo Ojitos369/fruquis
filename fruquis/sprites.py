@@ -32,8 +32,8 @@ WANTED = {
     "sitting": (False, "sentada en un borde", 4, "idle", "Resting in this character's natural 'seated' pose on a ledge (legs dangling if it has legs; coiled tail, hovering or perched if it does not), small blinks and sways."),
     "dragged": (False, "colgada mientras la arrastras", 3, "waiting", "Hanging as if held from the top of the head: the body dangles naturally and sways gently."),
     "falling": (False, "cae", 3, "jumping", "Falling: surprised face, body parts trailing upward as they would on this character. Loop."),
-    "climbing": (False, "trepa paredes (se dibuja de pie, la app la rota)", 6, "running-right", "Climbing cycle in this character's own way (limbs, coiling, clinging), drawn UPRIGHT like a locomotion cycle. The app rotates it onto walls and ceilings."),
-    "clinging": (False, "agarrada quieta a una pared o al techo (se dibuja de pie, la app la rota)", 4, "idle", "Holding on while stationary on a wall or ceiling, in this character's own way (gripping with limbs, claws, tail, suction, coiled body), small sways and blinks. Drawn UPRIGHT like a resting pose; the app rotates it onto walls and ceilings."),
+    "climbing": (False, "trepa paredes (se dibuja de pie con la pared a su izquierda; la app la voltea)", 6, "running-right", "Climbing cycle UP a vertical wall that is on the LEFT edge of the cell, drawn UPRIGHT (head up, never rotated or lying down); the app mirrors it for a wall on the right, flips it to climb down and turns it for the ceiling. The character's belly and limbs are pressed against the left edge of the cell, which is the surface it climbs. Show the GRIP clearly in every frame: each hand, foot, claw, tentacle or tail tip visibly gripping, hooking or sticking to the surface (fingers curled, claws dug in, suction tips flattened), body low and close to the surface, leaning slightly forward. Alternate the limbs like a gecko or a rock climber: in each frame one or two limbs lift off and reach UP along the wall while the others stay planted and pull the body upward; the next frame plants them. Exaggerate the reach-and-pull so the effort and the upward movement read at a glance. Facing the wall (left). Never a normal walk or run with the body upright and floating."),
+    "clinging": (False, "agarrada quieta a una pared o al techo (se dibuja de pie con la pared a su izquierda; la app la voltea)", 4, "idle", "Holding on while stationary to a vertical wall that is on the LEFT edge of the cell, drawn UPRIGHT (head up, never rotated or lying down); the app mirrors it for a wall on the right and turns it for the ceiling. Belly pressed against the left edge of the cell, every limb, claw, tentacle or tail tip visibly gripping or stuck to the surface (fingers curled, claws dug in, suction flattened), body tense and close to the surface, with small sways, breathing and blinks. It must clearly look like it is hanging on, not standing."),
     "poking": (False, "pica algo", 5, "jumping", "Reaches out with whatever the character has (an arm, a tail tip, a tentacle, its nose) to press something in front of it, then retracts. Draw the pressed object (a button, a small panel or screen) sized for this character."),
     "reading": (False, "lee / mira con atención (cuando analiza tu ventana)", 4, "review", "Reading attentively: DRAW the thing being read, held or placed the way THIS character can handle it (an open book, a notebook, a scroll, or floating lines of text if it has no hands), head slightly lowered, eyes scanning left and right, small page turns and nods."),
     "typing": (False, "teclea", 4, "review", "DRAW a keyboard (or laptop) scaled to this character and type on it quickly with its own appendages (fingers, paws, claws, tail tip, tentacles, beak...), eyes on the keys, small head bobs."),
@@ -42,6 +42,17 @@ WANTED = {
     "eating": (False, "come", 6, "waving", "Eating: DRAW food that fits this creature's diet (fruit, meat, fish, seeds, a cookie, crystals...), bring it to the mouth with its own limbs (or lunge at it if it has none) and visibly bite and chew, cheeks or body puffing, the food getting smaller, happy."),
     "cleaning": (False, "se limpia", 6, "waving", "Cleaning itself in this character's own way (grooming with limbs, shaking, rubbing against itself). DRAW a small sponge, towel or brush and visible soap foam: white suds and a few soap bubbles covering parts of its body, which it scrubs and then rinses off."),
 }
+# nombre en español para mostrar en la interfaz (las claves siguen en inglés: formato de character.json y prompts)
+ES = {"idle": "reposo", "running-right": "correr derecha", "running-left": "correr izquierda", "jumping": "saltar", "waving": "saludar",
+      "failed": "fallo", "waiting": "espera", "review": "pensar", "talking": "hablar", "sleeping": "dormir", "sitting": "sentada",
+      "dragged": "arrastrada", "falling": "caer", "climbing": "trepar", "clinging": "agarrada", "poking": "picar", "reading": "leer",
+      "typing": "teclear", "pampered": "mimada", "playing": "jugar", "eating": "comer", "cleaning": "limpiar", LOOK: "mirada"}
+
+
+def label(name: str) -> str:
+    return ES.get(name, name)
+
+
 STYLE = ("Pet-safe sprite: compact full-body mascot, readable in a {w}x{h} cell, clear silhouette, simple face, stable palette/materials, "
          "and crisp edges for chroma-key extraction.")
 

@@ -29,10 +29,19 @@ def _alpha(im: Image.Image) -> Image.Image:
     near = np.isin(lab, edge[edge > 0])
     pink = (rgb[..., 0] > 190) & (rgb[..., 2] > 190) & (rgb[..., 1] < 120)
     # croma magenta: también el borde mezclado (rosa/violeta casi puro) pasa a transparente; aunque la esquina sea de otro color (márgenes blancos)
+    a = a.copy()
     if (corner[0] > 200 and corner[2] > 200 and corner[1] < 90) or pink.mean() > 0.1:
         near |= pink
+        # halo: magenta mezclado con el contorno (violeta/vino, p. ej. 120,0,120). Solo lo que toca el fondo, para no tocar morados
+        # del personaje: la parte magenta pasa a transparencia y se recupera el color de debajo (120,0,120 → negro al 53 %)
+        lo, hi = np.minimum(rgb[..., 0], rgb[..., 2]), np.maximum(rgb[..., 0], rgb[..., 2])
+        tint = (lo - rgb[..., 1] > 35) & (hi - lo < 0.4 * hi) & ~near
+        lab, _ = ndimage.label(tint | near)
+        tint &= np.isin(lab, np.unique(lab[near]))
+        m = np.clip((lo - rgb[..., 1]) / 255, 0, 0.95)[tint, None]
+        a[tint, :3] = np.clip((rgb[tint] - m * (255, 0, 255)) / (1 - m), 0, 255)
+        a[tint, 3] = (a[tint, 3] * (1 - m[:, 0])).astype(np.uint8)
     # shortcut: huecos de fondo cerrados (entre tentáculos) de un fondo no magenta quedan opacos; mejor que borrar el personaje
-    a = a.copy()
     a[near, 3] = 0
     return Image.fromarray(a)
 
@@ -224,8 +233,8 @@ def analyze(path: str, cell: tuple, pad: int = 6, ai: bool | None = None) -> lis
     a[~mask, 3] = 0
     lab = np.where(mask, lab, 0)
     gap = max(2, d)  # con d*2 dos poses a ~17 px (orejas anchas) se fundían en una sola
-    dens = lambda m, ax: m.sum(ax) > 0.012 * m.sum(ax).max()  # ignora los hilos de motas entre filas
-    rows = _runs(dens(mask, 1), 2)
+    dens = lambda m, ax: m.sum(ax) > 0.03 * m.sum(ax).max()  # ignora los hilos de motas entre filas
+    rows = _runs(dens(mask, 1), 1)
     frames = []
     for y0, y1 in rows:
         runs = _runs(dens(mask[y0:y1], 0), gap)

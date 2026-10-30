@@ -269,7 +269,7 @@ class CharactersView(View):
     def add(self):
         """Hoja de cualquier tamaño: se detectan los cuadros y la IA propone qué animaciones son; luego la revisas."""
         c = self.cur()
-        path, _ = QFileDialog.getOpenFileName(self, "Hoja de sprites", "", "Imágenes (*.png *.webp *.jpg)")
+        path, _ = QFileDialog.getOpenFileName(self, "Hoja de sprites", "", "Imágenes (*.png *.webp *.jpg *.jpeg)")
         if not c or not path:
             return
         self.status.setText("Analizando la hoja con la IA…")
@@ -406,7 +406,7 @@ class CatalogView(View):
         self.list.clear()
         for n in self.names():
             a = c.anims.get(n)
-            it = QListWidgetItem(f"{n}    {a['frames']}" if a else f"{n}    —")
+            it = QListWidgetItem(f"{sprites.label(n)}    {a['frames']}" if a else f"{sprites.label(n)}    —")
             if not a:
                 it.setForeground(QColor("#6a6a7c"))
             self.list.addItem(it)
@@ -440,7 +440,7 @@ class CatalogView(View):
         for wd in (self.fps, self.mode):
             wd.setEnabled(bool(a))
         w = sprites.WANTED.get(n)
-        self.name.setText(n or "")
+        self.name.setText(sprites.label(n) if n else "")
         if not a:
             self.frames = []
             self.view.setPixmap(QPixmap())
@@ -491,7 +491,7 @@ class CatalogView(View):
 
     def replace(self):
         n = self.cur()
-        path, _ = QFileDialog.getOpenFileName(self, f"Hoja con la animación '{n}'", "", "Imágenes (*.png *.webp *.jpg)")
+        path, _ = QFileDialog.getOpenFileName(self, f"Hoja con la animación '{n}'", "", "Imágenes (*.png *.webp *.jpg *.jpeg)")
         if not path:
             return
         try:
@@ -982,7 +982,7 @@ class AllPromptView(View):
         self.list.blockSignals(True)
         self.list.clear()
         for n in (x for x in sprites.WANTED if x not in self.c.anims):
-            it = QListWidgetItem(f"{n}  ·  {sprites.WANTED[n][1]}")
+            it = QListWidgetItem(f"{sprites.label(n)}  ·  {sprites.WANTED[n][1]}")
             it.setData(Qt.UserRole, n)
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
             it.setCheckState(Qt.Checked)
@@ -1193,8 +1193,8 @@ class SettingsView(View):
         row = QHBoxLayout()
         self.mic = QComboBox()
         self.mic.addItem("Predeterminado del sistema", "")
-        for m in self.pet.voice.mics():
-            self.mic.addItem(m, m)
+        for val, label in self.pet.voice.mics():
+            self.mic.addItem(label, val)
         self.mic.setCurrentIndex(max(0, self.mic.findData(store.get("voice_mic", ""))))
         self.mic.currentIndexChanged.connect(lambda _: self.pet.voice.set_mic(self.mic.currentData()))
         row.addWidget(QLabel("Micrófono"))
@@ -1265,9 +1265,10 @@ class SettingsView(View):
         kind.addItem("Formato OpenAI (OpenAI o servidor propio)", "openai")
         if what == "chat":
             kind.addItem("Formato Anthropic (Claude o servidor propio)", "anthropic")
+        kind.addItem("Servidor aipi (claude/codex de tu servidor)", "server")
         url, key, model = QLineEdit(), QLineEdit(), QLineEdit()
         key.setEchoMode(QLineEdit.Password)
-        url.setPlaceholderText("URL base; vacío = servidor oficial")
+        url.setPlaceholderText("URL base; vacío = servidor oficial (servidor aipi: tu enlace personal con ?key=…)")
         key.setPlaceholderText("clave de la API (vacío = variable de entorno)")
         model.setPlaceholderText("modelo; vacío = el predeterminado")
         for w in (mode, kind, url, key, model):
@@ -1451,7 +1452,7 @@ class GenBatchView(View):
         self.list.clear()
         for n in sprites.WANTED:
             have = n in c.anims
-            it = QListWidgetItem(f"{n}  ·  {'reemplazar (ya existe)' if have else 'falta'}")
+            it = QListWidgetItem(f"{sprites.label(n)}  ·  {'reemplazar (ya existe)' if have else 'falta'}")
             it.setData(Qt.UserRole, n)
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
             it.setCheckState(Qt.Unchecked if have else Qt.Checked)

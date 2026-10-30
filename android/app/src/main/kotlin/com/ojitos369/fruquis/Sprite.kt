@@ -102,8 +102,8 @@ class Sprite {
             "idle" to "de pie, respirando", "running-right" to "camina/corre a la derecha", "running-left" to "camina/corre a la izquierda",
             "jumping" to "salto de alegría / salto a una ventana", "waving" to "saluda", "failed" to "triste/error", "waiting" to "espera",
             "review" to "pensando/trabajando", "talking" to "habla (mensajes y chat)", "sleeping" to "duerme", "sitting" to "sentada en un borde",
-            "dragged" to "colgada mientras la arrastras", "falling" to "cae", "climbing" to "trepa paredes (se dibuja de pie, la app la rota)",
-            "clinging" to "agarrada quieta a una pared o al techo (se dibuja de pie, la app la rota)", "poking" to "pica algo",
+            "dragged" to "colgada mientras la arrastras", "falling" to "cae", "climbing" to "trepa paredes (se dibuja de pie con la pared a su izquierda; la app la voltea)",
+            "clinging" to "agarrada quieta a una pared o al techo (se dibuja de pie con la pared a su izquierda; la app la voltea)", "poking" to "pica algo",
             "reading" to "lee / mira con atención (cuando analiza tu ventana)", "typing" to "teclea", "pampered" to "la están mimando (feliz, se deja querer)",
             "playing" to "juega", "eating" to "come", "cleaning" to "se limpia",
         )

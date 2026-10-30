@@ -5,4 +5,4 @@ cd "$(dirname "$0")"
 export PATH="$HOME/.local/bin:$PATH"
 uv pip install --python .venv/bin/python pyinstaller
 ADD=""; [ -d fruquis/characters ] && ADD="--add-data fruquis/characters:fruquis/characters"
-.venv/bin/python -m PyInstaller --noconfirm --onefile --name fruquis $ADD launcher.py
+.venv/bin/python -m PyInstaller --noconfirm --onefile --name fruquis --icon fruquis/icon.png --add-data fruquis/icon.png:fruquis $ADD launcher.py

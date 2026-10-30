@@ -4,6 +4,7 @@ sigue como pedido: «Fruquis, abre el navegador» o «Fruquis» (te escucho…) 
 salían. Paridad con Android (VoiceService.kt, mismo criterio de nombre). Dependencias opcionales: `pip install faster-whisper sounddevice`; el
 modelo (~145 MB) se baja una vez a ~/.fruquis al activarlo."""
 import json
+import os
 import re
 import socket
 import subprocess
@@ -19,7 +20,7 @@ from queue import Empty, Queue
 
 from PySide6.QtCore import QObject, Signal
 
-from . import deps, store
+from . import deps, machine, store
 
 MODEL_URL = "https://huggingface.co/Systran/faster-whisper-{}/resolve/main/"
 MODELS = {"base": 145_000_000, "small": 483_000_000}  # tamaño de model.bin: «small» entiende bastante mejor el español
@@ -120,6 +121,10 @@ def _phon(w: str) -> str:
     return w
 
 
+VOCAB = ("VS Code", "Visual Studio Code", "Chrome", "Firefox")  # palabras técnicas que Whisper en español suele deformar
+# «vscode», «vs code», «visual studio code», «estudio(s) code(s/count)», «bi es code»…: todo es el editor
+CODE_RE = re.compile(r"\b(?:v\.?\s?s\.?\s?code|vscode|(?:visual\s+)?estudios?\s+(?:code|codes|count|cod|coud)|visual\s+studio(?:\s+code)?|studio\s+(?:code|count))\b", re.I)
+
 class Voice(QObject):
     woke = Signal()  # dijo el nombre solo: queda escuchando la orden
     heard = Signal(str)  # orden dictada
@@ -139,6 +144,7 @@ class Voice(QObject):
         self.mic = store.get("voice_mic", "")  # nombre del dispositivo de entrada; vacío = el predeterminado
         self.size = store.get("voice_model", "small") if store.get("voice_model", "small") in MODELS else "small"
         self.retries = 0  # reintentos seguidos de abrir el micrófono tras un corte
+        self.mic_mode = store.get("button_mode", "chat") == "mic"  # el nombre solo se escucha con el botón flotante en 🎙
         self.wake, self.once, self.live = False, False, False  # wake: escucha su nombre; once: botón del micrófono (una orden sin nombre); live: micrófono abierto
 
     def set_mic(self, name: str):
@@ -156,16 +162,28 @@ class Voice(QObject):
         return [(i, d) for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0 and d["hostapi"] == api]
 
     @classmethod
-    def mics(cls) -> list[str]:
+    def mics(cls) -> list[tuple[str, str]]:
+        """(valor guardado, texto) de cada micrófono. En Linux, las entradas reales de PipeWire/Pulse (sin «monitor»), como en Ajustes de sonido."""
+        if sys.platform.startswith("linux"):
+            try:
+                srcs = json.loads(subprocess.run(["pactl", "--format=json", "list", "sources"], capture_output=True, text=True, timeout=5).stdout)
+                return [(x["name"], x.get("description") or x["name"]) for x in srcs if not x["name"].endswith(".monitor")]
+            except Exception:  # noqa: BLE001 - sin pactl solo queda el predeterminado
+                return []
         try:
             import sounddevice as sd
-            return list(dict.fromkeys(d["name"] for _, d in cls.inputs(sd)))
+            return [(n, n) for n in dict.fromkeys(d["name"] for _, d in cls.inputs(sd))]
         except Exception:  # noqa: BLE001 - sin sounddevice solo queda el predeterminado
             return []
 
     def enable(self, on: bool):
         """Escuchar su nombre (Ajustes)."""
         self.wake = on
+        self.sync()
+
+    def set_mic_mode(self, on: bool):
+        """Botón flotante en modo micrófono (True) o chat (False): en modo chat no escucha el nombre; el clic en modo micrófono sigue dictando sin nombre."""
+        self.mic_mode = on
         self.sync()
 
     def listen_once(self):
@@ -184,11 +202,14 @@ class Voice(QObject):
 
     def sync(self):
         """Arranca o apaga el micrófono según haga falta (nombre activado o botón armado)."""
-        if self.wake or self.once:
+        if self.listen_name() or self.once:
             if not self.on:
                 self.start()
         else:
             self.on, self.gen, self.live = False, self.gen + 1, False
+
+    def listen_name(self) -> bool:
+        return self.wake and self.mic_mode
 
     def start(self):
         self.on, self.gen = True, self.gen + 1  # cada arranque invalida el hilo anterior: nunca hay dos escuchando (el orden salía duplicado)
@@ -254,11 +275,16 @@ class Voice(QObject):
             threading.Thread(target=self.work, args=(gen, whisper, q), daemon=True).start()
             self.ready.emit()
             log("inicio", personaje=self.name(), micro=self.mic or "predeterminado", modelo=self.size, nombre=self.wake, boton=self.once)
-            if self.wake:
+            if self.listen_name():
                 self.status.emit(f"¡Listo! Ya te escucho: di «{self.name()}»")
             ref, noise, buf, pre, talk, quiet = 0.0, 0.0, [], [], 0, 0
             dev = self.mic  # si se cambia el micrófono en Ajustes, este hilo termina y arranca otro
             idx = next((i for i, d in self.inputs(sd) if d["name"] == dev), None) if dev else None
+            if sys.platform.startswith("linux"):  # la entrada elegida se pasa al servidor de sonido por la API «pulse» de PortAudio
+                os.environ.pop("PULSE_SOURCE", None)
+                if dev:
+                    os.environ["PULSE_SOURCE"] = dev
+                    idx = next((i for i, d in enumerate(sd.query_devices()) if d["name"] == "pulse" and d["max_input_channels"] > 0), None)
             wasapi = idx is not None and sd.query_hostapis(sd.query_devices(idx)["hostapi"])["name"] == "Windows WASAPI"
             with sd.RawInputStream(samplerate=RATE, blocksize=BLOCK, dtype="int16", channels=1, device=idx,
                                    extra_settings=sd.WasapiSettings(auto_convert=True) if wasapi else None) as st:  # WASAPI no remuestrea solo
@@ -291,7 +317,7 @@ class Voice(QObject):
         except Exception as e:  # noqa: BLE001 - sin librería, micrófono o red para el modelo: se avisa y se apaga
             if self.gen != gen:  # un hilo ya reemplazado no apaga al nuevo
                 return
-            if type(e).__name__ == "PortAudioError" and self.retries < 5 and (self.wake or self.once):  # el micrófono se cortó (auriculares que se duermen, otro programa…)
+            if type(e).__name__ == "PortAudioError" and self.retries < 5 and (self.listen_name() or self.once):  # el micrófono se cortó (auriculares que se duermen, otro programa…)
                 self.retries += 1
                 log("error", donde="micrófono cortado, reintento", detalle=str(e), intento=self.retries)
                 time.sleep(2)
@@ -316,10 +342,11 @@ class Voice(QObject):
             try:
                 name = self.name()
                 segs, _ = whisper.transcribe(audio, language="es", beam_size=1, vad_filter=True, condition_on_previous_text=False,
-                                             initial_prompt=", ".join([name, *self.others()]) + ".",  # los nombres de los personajes, para que los escriba bien
+                                             initial_prompt=", ".join([*machine.vocab(), *VOCAB, *self.others(), name]) + ".",  # los nombres de los personajes, para que los escriba bien
                                              no_repeat_ngram_size=3, compression_ratio_threshold=2.0)  # y sin bucles: con audio corto repetía «Mutama Mutama…»
                 segs = list(segs)
                 text, cycles = collapse_loops(" ".join(s.text.strip() for s in segs).strip())
+                text = CODE_RE.sub("VS Code", text)
             except Exception as e:  # noqa: BLE001
                 log("error", donde="transcribir", detalle=str(e))
                 self.problem.emit(f"No pude transcribir ({e})")

@@ -10,7 +10,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from . import binaries, control, place, provider, store
+from . import binaries, control, machine, place, provider, store
 
 PERSONA = ("Eres {name}, una mascota de escritorio ({desc}). Tierna, breve, "
            "responde siempre en español, máximo 3 frases. No pegues código largo.")
@@ -117,7 +117,7 @@ def ask(prompt: str, model: str = "haiku", timeout: int = 120, tools: bool = Fal
               + (" Escritorios virtuales de Windows: `key win+ctrl+right` / `key win+ctrl+left` (para ir al primero, varias veces a la izquierda y luego avanza; «el segundo "
                  "escritorio» casi siempre es un escritorio virtual, no un monitor). Las órdenes llegan dictadas y pueden venir mal transcritas: si no tienen sentido, "
                  "pide que las repita en vez de adivinar." if desktop and sys.platform == "win32" else ""))
-    system += WEB + place.hint()
+    system += WEB + place.hint() + (machine.hint() + machine.match(prompt) if (tools or desktop) else "")  # el contexto del equipo solo sirve si puede ejecutar comandos
     names = ([SHELL] if (tools or desktop) else []) + (["Read"] if see else []) + ["WebSearch", "WebFetch"]
     browser = bool(store.get("chat_opts", {}).get("browser"))  # casilla «Navegador» del chat: extensión Claude in Chrome
     if browser:

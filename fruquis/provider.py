@@ -1,6 +1,7 @@
 """Proveedores de IA: cada función (chat, imagen) usa un binario local (`claude`, `codex`) o una API. La API puede ser la oficial (OpenAI,
 Anthropic) o un servidor propio con el mismo formato: basta cambiar la URL. Sin Qt ni dependencias (urllib). Ajustes en store["ai"]:
-{"chat": {mode: binary|api, kind: openai|anthropic, url, key, model}, "image": {mode, url, key, model}}. Formato compartido con la app Android
+{"chat": {mode: binary|api, kind: openai|anthropic|server, url, key, model}, "image": {mode, kind: openai|server, url, key, model}}. kind «server» = servidor
+propio aipi (server/aipi.py: claude y codex de un servidor, POST {url}/api/chat/?key= y /api/image/?key=, imágenes en base64). Formato compartido con la app Android
 (android/.../Ai.java). `python tests/test_provider.py` = prueba contra un servidor falso."""
 import base64
 import json
@@ -8,6 +9,7 @@ import os
 import subprocess
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -26,11 +28,11 @@ class AIError(Exception):
 def cfg(what: str) -> dict:
     """Configuración efectiva de `chat` o `image`, con los valores por defecto aplicados."""
     c = dict((store.get("ai", {}) or {}).get(what) or {})
-    kind = "openai" if what == "image" else (c.get("kind") if c.get("kind") in OFFICIAL else "openai")  # las imágenes solo en formato OpenAI
-    url = (c.get("url") or OFFICIAL[kind]).rstrip("/")
-    key = c.get("key") or os.environ.get("FRUQUIS_API_KEY") or (os.environ.get(ENV_KEY[kind]) if url == OFFICIAL[kind] else "") or ""
+    kind = c.get("kind") if c.get("kind") in (("openai", "server") if what == "image" else (*OFFICIAL, "server")) else "openai"  # imágenes: sin formato Anthropic
+    url = (c.get("url") or OFFICIAL.get(kind, "")).rstrip("/")
+    key = c.get("key") or os.environ.get("FRUQUIS_API_KEY") or (os.environ.get(ENV_KEY[kind]) if url == OFFICIAL.get(kind) else "") or ""
     return {"mode": "api" if c.get("mode") == "api" else "binary", "kind": kind, "url": url, "key": key,
-            "model": c.get("model") or MODELS[what][kind], "official": url == OFFICIAL[kind]}
+            "model": c.get("model") or MODELS[what].get(kind, ""), "official": url == OFFICIAL.get(kind)}
 
 
 def api_on(what: str) -> bool:
@@ -50,11 +52,19 @@ def image_ready() -> bool:
 
 
 def _post(c: dict, path: str, body: bytes, headers: dict, timeout: int) -> dict:
-    if c["official"] and not c["key"]:
+    full = c["url"] + path
+    if c["kind"] == "server":  # la URL de Ajustes es el enlace personal (con ?key=); también vale la base + clave aparte
+        full = c["url"] if "/api/" in c["url"] else c["url"] + path
+        if "key=" not in full and c["key"]:
+            full += ("&" if "?" in full else "?") + "key=" + urllib.parse.quote(c["key"])
+        if not c["url"] or "key=" not in full:
+            raise AIError("Falta el enlace del servidor con su clave (Ajustes → IA).")
+    elif c["official"] and not c["key"]:
         raise AIError("Falta la clave de la API (Ajustes → IA).")
-    h = {**headers, **({"Authorization": f"Bearer {c['key']}"} if c["kind"] == "openai" and c["key"] else {}),
+    h = {"User-Agent": "fruquis", **headers,  # Cloudflare rechaza el User-Agent por defecto de urllib
+         **({"Authorization": f"Bearer {c['key']}"} if c["kind"] == "openai" and c["key"] else {}),
          **({"x-api-key": c["key"], "anthropic-version": "2023-06-01"} if c["kind"] == "anthropic" and c["key"] else {})}
-    req = urllib.request.Request(c["url"] + path, body, h, method="POST")
+    req = urllib.request.Request(full, body, h, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
@@ -72,6 +82,10 @@ def api_text(prompt: str, system: str = "", images: list = (), model: str | None
     """Una respuesta de texto (con imágenes opcionales para visión) por la API de chat configurada."""
     c = cfg("chat")
     model = model or c["model"]
+    if c["kind"] == "server":
+        d = _post(c, "/api/chat/", json.dumps({"prompt": prompt, "system": system, "model": model, "images": [x for _, x in map(_b64, images)]}).encode(),
+                  {"content-type": "application/json"}, timeout)
+        return (d.get("text") or "").strip()
     if c["kind"] == "anthropic":
         parts = [{"type": "image", "source": {"type": "base64", "media_type": m, "data": d}} for m, d in map(_b64, images)] + [{"type": "text", "text": prompt}]
         d = _post(c, "/v1/messages", json.dumps({"model": model, "max_tokens": 2048, "system": system, "messages": [{"role": "user", "content": parts}]}).encode(),
@@ -89,6 +103,12 @@ def api_text(prompt: str, system: str = "", images: list = (), model: str | None
 def api_image(prompt: str, refs: list = (), timeout: int = 600) -> bytes:
     """Una imagen (PNG) por la API de imágenes configurada: /images/generations, o /images/edits si hay imágenes de referencia."""
     c = cfg("image")
+    if c["kind"] == "server":
+        d = _post(c, "/api/image/", json.dumps({"prompt": prompt, "images": [x for _, x in map(_b64, refs)]}).encode(), {"content-type": "application/json"}, timeout)
+        try:
+            return base64.b64decode(d["image"])
+        except (KeyError, ValueError):
+            raise AIError("La API no devolvió ninguna imagen.")
     if not refs:
         d = _post(c, "/images/generations", json.dumps({"model": c["model"], "prompt": prompt, "size": "1024x1024", "n": 1}).encode(),
                   {"content-type": "application/json"}, timeout)

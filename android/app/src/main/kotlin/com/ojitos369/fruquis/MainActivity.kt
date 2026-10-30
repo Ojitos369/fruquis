@@ -88,6 +88,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -122,7 +123,6 @@ class MainActivity : ComponentActivity() {
     private val sprite = Sprite()
     private var charVersion by mutableStateOf(0)  // sube al importar o cambiar de personaje
     private var floating by mutableStateOf(false)
-    private var listening by mutableStateOf(false)
     private var play by mutableStateOf(Play("idle", 0))
     private val chat = mutableStateListOf<Pair<Boolean, String>>()  // (es del usuario, texto)
     private var tab by mutableStateOf("care")  // la mascota flotante abre la app en una pestaña (extra "tab")
@@ -147,7 +147,6 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         care.load()
         floating = OverlayService.running
-        listening = VoiceService.running
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
@@ -303,17 +302,27 @@ class MainActivity : ComponentActivity() {
             val ctx = chat.takeLast(10).joinToString("\n") { (m, t) -> (if (m) "Tú: " else "$name: ") + t }
             chat.add(true to msg + if (sent.isEmpty()) "" else "\n📎 ${sent.size} imagen(es)")
             play = Play("talking", 120_000)
+            OverlayService.bubble(this@MainActivity, "💭 Pensando…", 300_000, true)  // globo de pensamiento, como el escritorio
             job = scope.launch {
                 val reply = withContext(Dispatchers.IO) {
                     try {
-                        Ai(getSharedPreferences("ai", MODE_PRIVATE)).chat(if (ctx.isEmpty()) msg else "$ctx\nTú: $msg",
-                            "Eres $name, una mascota${if (desc.isEmpty()) "" else " ($desc)"}. Tierna, breve, responde siempre en español, máximo 3 frases. " +
-                                "No pegues código largo.", sent.map { jpeg(it) })  // como chat.PERSONA
+                        val persona = "Eres $name, una mascota${if (desc.isEmpty()) "" else " ($desc)"}. Tierna, breve, responde siempre en español, máximo 3 frases. " +
+                            "No pegues código largo."  // como chat.PERSONA
+                        val q = if (ctx.isEmpty()) msg else "$ctx\nTú: $msg"
+                        if (sent.isEmpty() && PhoneService.on(this@MainActivity)) PhoneService.run(this@MainActivity, q, persona, { !isActive }) { a ->  // maneja el teléfono
+                            OverlayService.bubble(this@MainActivity, PhoneService.STEP_TEXT[a] ?: "📱 …", 300_000, true)
+                        }
+                        else Ai(getSharedPreferences("ai", MODE_PRIVATE)).chat(q, persona, sent.map { jpeg(it) })
                     } catch (e: Exception) {
                         "No pude responder (${e.message})"
                     }
                 }
+                VoiceLog.add(this@MainActivity, "respuesta", "pedido" to msg, "origen" to "chat", "respuesta" to reply)
                 chat.add(false to reply)
+                // chat cerrado (otra app al frente u otra pestaña): la respuesta sale en un globo junto a la mascota, como en el escritorio
+                if (!lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED) || tab != "chat")
+                    OverlayService.bubble(this@MainActivity, reply).let { shown -> if (!shown) toast(reply) }
+                else OverlayService.bubble(this@MainActivity, "")  // quita el globo de pensamiento
                 busy = false
                 play = Play("talking", 2000)
             }
@@ -354,6 +363,7 @@ class MainActivity : ComponentActivity() {
             Button({
                 if (busy) {  // cancelar: el mensaje y sus imágenes vuelven al cuadro para corregirlos (la petición HTTP termina sola en segundo plano y se descarta)
                     job?.cancel()
+                    OverlayService.bubble(this@MainActivity, "")
                     text = chat.removeAt(chat.lastIndex).second.substringBefore("\n📎")  // no removeLast(): falla en Android < 15
                     imgs = sent
                     busy = false
@@ -545,9 +555,9 @@ class MainActivity : ComponentActivity() {
     private fun androidx.compose.foundation.layout.ColumnScope.SettingsTab() {
         val ai = remember { Ai(getSharedPreferences("ai", MODE_PRIVATE)) }
         val fields = listOf(
-            Triple("chat", "kind", "Formato (openai | anthropic)"), Triple("chat", "url", "URL base (vacío = oficial)"),
+            Triple("chat", "kind", "Formato (openai | anthropic | server)"), Triple("chat", "url", "URL base (vacío = oficial) o enlace personal del servidor"),
             Triple("chat", "key", "Clave"), Triple("chat", "model", "Modelo (vacío = predeterminado)"),
-            Triple("image", "url", "URL base (vacío = OpenAI)"), Triple("image", "key", "Clave"),
+            Triple("image", "kind", "Formato (openai | server)"), Triple("image", "url", "URL base (vacío = OpenAI) o enlace personal del servidor"), Triple("image", "key", "Clave"),
             Triple("image", "model", "Modelo (vacío = gpt-image-1)"))
         val values = remember { fields.map { (w, k, _) -> mutableStateOf(ai.p.getString("${w}_$k", "")!!) } }
         val app = remember { getSharedPreferences("app", MODE_PRIVATE) }
@@ -573,23 +583,22 @@ class MainActivity : ComponentActivity() {
                     keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else KeyboardType.Text))
             }
         }
-        var pick by remember { mutableStateOf(false) }
-        if (Build.VERSION.SDK_INT >= 31) Pill("🎙 Micrófono", Modifier.fillMaxWidth()) { pick = true }  // Android solo deja elegir la entrada desde la 12
-        if (pick) {
-            val mics = getSystemService(android.media.AudioManager::class.java).availableCommunicationDevices
-            val prefs = getSharedPreferences("app", MODE_PRIVATE)
-            AlertDialog(onDismissRequest = { pick = false }, containerColor = PANEL, title = { Text("Micrófono") },
-                text = {
-                    Column {
-                        TextButton({ prefs.edit().remove("mic").apply(); pick = false; toast("Micrófono: predeterminado (aplica al reactivar el asistente)") }) { Text("Predeterminado del sistema") }
-                        mics.forEach { d ->
-                            TextButton({ prefs.edit().putInt("mic", d.id).apply(); pick = false; toast("Micrófono: ${d.productName} (aplica al reactivar el asistente)") }) { Text("${d.productName}") }
-                        }
-                    }
-                },
-                confirmButton = {}, dismissButton = { TextButton({ pick = false }) { Text("Cancelar", color = DIM) } })
+        // botón lateral / gesto del asistente: Fruquis como «App de asistente digital» (AssistActivity); no hay escucha continua del nombre
+        Primary("🎙 Usar como asistente del teléfono", Modifier.fillMaxWidth()) {
+            if (checkSelfPermission("android.permission.RECORD_AUDIO") != PackageManager.PERMISSION_GRANTED)
+                requestPermissions(arrayOf("android.permission.RECORD_AUDIO"), 3)
+            toast("Elige Fruquis en «App de asistente digital»")
+            startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
         }
-        Primary(if (listening) "Dejar de escuchar su nombre" else "Asistente por voz (di su nombre)", Modifier.fillMaxWidth()) { toggleVoice() }
+        var control by remember { mutableStateOf(app.getBoolean("control", false)) }
+        Pill(if (control) "📱 Controla el teléfono: sí" else "📱 Controlar el teléfono", Modifier.fillMaxWidth()) {  // como «Controlar» del escritorio
+            control = !control
+            app.edit().putBoolean("control", control).apply()
+            if (control && PhoneService.instance == null) {  // el servicio de accesibilidad se activa a mano en Ajustes del sistema
+                toast("Activa «Fruquis» en Accesibilidad. Si sale gris: Info de la app › ⋮ › Permitir ajustes restringidos")
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+        }
         Primary("Guardar", Modifier.fillMaxWidth()) {
             ai.p.edit().apply { fields.forEachIndexed { i, (w, k, _) -> putString("${w}_$k", values[i].value.trim()) } }.apply()
             toast("Ajustes guardados")
@@ -625,22 +634,6 @@ class MainActivity : ComponentActivity() {
         reloadFloat()
     }
 
-    // ---- asistente por voz (VoiceService) ----
-    private fun toggleVoice() {
-        if (VoiceService.running) {
-            startService(Intent(this, VoiceService::class.java).setAction(VoiceService.STOP))
-            listening = false
-            return
-        }
-        if (checkSelfPermission("android.permission.RECORD_AUDIO") != PackageManager.PERMISSION_GRANTED) {
-            toast("Permite el micrófono y vuelve a pulsar")
-            requestPermissions(arrayOf("android.permission.RECORD_AUDIO"), 3)
-            return
-        }
-        startForegroundService(Intent(this, VoiceService::class.java))
-        listening = true
-    }
-
     // ---- mascota flotante (OverlayService) ----
     private fun toggleFloat() {
         if (OverlayService.running) {
@@ -658,6 +651,8 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 2)  // para ver el aviso con el botón «Quitar»
         startForegroundService(Intent(this, OverlayService::class.java))
         floating = true
+        if (!getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(packageName))  // que el ahorro de batería no la cierre
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
     }
 
     /** Mismo zip que sprites.export_character: <id>/character.json, brief.md, imágenes de referencia y las hojas que usa. */

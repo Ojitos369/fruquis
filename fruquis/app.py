@@ -1,7 +1,9 @@
 """Mascota estilo shimeji: ventana transparente siempre encima. Camina, trepa y se cuelga por los bordes de la pantalla y de la
 ventana activa, se deja arrastrar, cuidar (tamagotchi) y conversar."""
 import math
+import os
 import random
+import signal
 import sys
 import threading
 import time
@@ -10,10 +12,10 @@ from pathlib import Path
 
 import psutil
 from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QCursor, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QTransform
+from PySide6.QtGui import QAction, QColor, QCursor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QTransform
 from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMenu, QMessageBox, QPushButton, QWidget
 
-from . import chat, sprites, store, theme, winctx
+from . import chat, machine, sprites, store, theme, winctx
 from .care import ACTIONS, Care
 from .voice import log
 
@@ -35,6 +37,7 @@ def clip(text: str, n: int = 220) -> str:
 
 
 BUSY_TEXT = {"thinking": "💭 Pensando…", "searching": "🔎 Buscando en internet…","reading": "👀 Mirando…", "working": "⚙️ Trabajando…", "writing": "✍️ Escribiendo…"}
+WALL_ANIMS = ("climbing", "clinging")  # se dibujan de pie con la pared a su izquierda (no como si estuvieran en el piso)
 BUSY_ANIM = {"thinking": "review", "reading": "reading", "searching": "reading", "working": "typing", "writing": "typing"}  # fase de la IA → animación
 
 
@@ -169,6 +172,7 @@ class Pet(QWidget):
         self.active_at, self.hop_at, self.low_at, self.save_at = time.monotonic(), 0.0, 0.0, time.monotonic()
         self.dir, self.mirror, self.hop, self.last_id = 1, False, None, None
         self.vx, self.samples, self.pamper_until = 0.0, [], 0.0
+        self.after_land = None  # acción pedida en pared o techo: se suelta y la hace al aterrizar
         self.hop_off = 0.0  # altura (px) del salto real mientras suena la animación «jumping»
         self.keep_free = store.get("keep_free")  # {"side": derecha|izquierda, "frac": 0.35}: espacio del piso que se le pidió dejar libre
         self.busy_phase, self.think_on, self.followers = None, False, []  # mientras la IA responde la mascota se queda quieta y muestra lo que hace
@@ -231,11 +235,23 @@ class Pet(QWidget):
         if not fr:
             return
         p = QPainter(self)
+        # borra el cuadro anterior: sin esto los píxeles semitransparentes se iban acumulando y quedaba un rastro de cuadros viejos
+        p.setCompositionMode(QPainter.CompositionMode_Clear)
+        p.fillRect(self.rect(), Qt.transparent)
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         p.translate(self.D / 2, self.D / 2)
-        p.rotate(self.seg.rot if self.attached else 0)
-        if self.mirror:
-            p.scale(-1, 1)
+        sg = self.seg
+        if self.attached and sg.rot != 0 and self.anim in WALL_ANIMS:
+            # −x local → hacia la pared (x local → al aire, n), cabeza (−y local) → hacia donde avanza: sube, baja o cruza el techo de frente
+            w, t = sg.n, (self.dir * sg.d[0], self.dir * sg.d[1])
+            if self.anim == "clinging" and abs(sg.rot) == 90:  # quieta en la pared: de pie, sin voltearse de cabeza
+                t = (0, -1)
+            p.setTransform(QTransform(w[0], w[1], -t[0], -t[1], 0, 0), True)
+        else:
+            p.rotate(sg.rot if self.attached else 0)
+            if self.mirror:
+                p.scale(-1, 1)
         if time.monotonic() < self.pamper_until:  # mimos: se aprieta y estira como si la acariciaran
             k = math.sin(time.monotonic() * 9) * 0.035
             p.scale(1 + k, 1 - k)
@@ -386,13 +402,15 @@ class Pet(QWidget):
             self.vx *= max(0.0, 1 - 0.5 * dt)  # rozamiento con el aire
             prev = self.c.y() + self.h / 2
             self.c = QPointF(self.c.x() + self.vx * dt, self.c.y() + self.vy * dt)
-            if not self.grab_edge(now):
+            if self.after_land or not self.grab_edge(now):  # con una acción pendiente no se agarra: va al piso
                 self.land(prev, self.c.y() + self.h / 2)
         elif st == "hop":
             self.hop_step(now)
         elif st == "busy":
             self.mirror = False
-            if self.busy_phase:
+            if self.attached and self.seg.rot != 0:  # responde de pie: primero baja al piso
+                self.fall_from()
+            elif self.busy_phase:
                 self.play(BUSY_ANIM.get(self.busy_phase, "review"))
             else:
                 self.state, self.until = "idle", now + 2
@@ -418,12 +436,12 @@ class Pet(QWidget):
         self.update()
 
     def face(self):
-        """Animación de caminar según el sentido local; en paredes y techo usa 'climbing' (espejada) o el correr rotado."""
+        """Animación de caminar según el sentido local; en paredes y techo usa 'climbing' (paintEvent la orienta) o el correr rotado."""
         sg = self.seg
         local = self.dir * sg.local
         if sg.rot != 0 and "climbing" in self.have:
             self.play("climbing")
-            self.mirror = local < 0
+            self.mirror = False
         else:
             self.play("running-right" if local > 0 else "running-left")
             self.mirror = False
@@ -441,8 +459,12 @@ class Pet(QWidget):
         if now < self.until:
             return
         self.until = now + random.uniform(2, 6)
-        if sg.rot != 0 and random.random() < 0.12:  # se suelta de la pared o del techo
-            self.fall_from()
+        if sg.rot != 0:  # en pared o techo solo se agarra, trepa o se suelta (jugar, esperar o dormir ahí se vería girado)
+            if random.random() < 0.12 or self.care.s["energia"] < 25 or now - self.active_at > 180:
+                self.fall_from()
+            elif random.random() < 0.6:
+                self.dir = random.choice((-1, 1))
+                self.state, self.until = "walk", now + random.uniform(2, 7)
         elif self.care.s["energia"] < 25 or now - self.active_at > 180:
             self.rest(25)
         else:
@@ -456,7 +478,17 @@ class Pet(QWidget):
             else:
                 self.play("waiting")
 
+    def on_floor(self, f) -> bool:
+        """Las animaciones de pie en pared o techo se verían giradas: se suelta y hace `f` al aterrizar."""
+        if self.attached and self.seg.rot != 0:
+            self.after_land = f
+            self.fall_from()
+            return False
+        return True
+
     def rest(self, secs: float):
+        if not self.on_floor(lambda: self.rest(secs)):
+            return
         self.state, self.until, self.mirror = "sleep", time.monotonic() + secs, False
         self.play("sleeping")
         self.care.s["energia"] = min(100, self.care.s["energia"] + secs)
@@ -468,11 +500,19 @@ class Pet(QWidget):
             sg = self.win.segs[i]
             if prev <= sg.a.y() <= foot and sg.a.x() <= x <= sg.b.x():
                 self.attach("win", i, x - sg.a.x(), d)
-                return self.slide()
+                return self.landed()
         sc = (QApplication.screenAt(QPoint(int(x), int(self.c.y()))) or QApplication.primaryScreen()).availableGeometry()
         if foot >= sc.bottom() + 1:
             self.scr, self.screen_t = sc, screen_track(sc)
             self.attach("screen", 0, max(0.0, min(x - self.scr.left(), self.scr.width())), d)
+            self.landed()
+
+    def landed(self):
+        f, self.after_land = self.after_land, None
+        if f:
+            self.vx = 0.0
+            f()
+        else:
             self.slide()
 
     def grab_edge(self, now: float) -> bool:
@@ -611,10 +651,10 @@ class Pet(QWidget):
             need = "❗ " if w and ACTIONS[name][0].get(w[0], 0) > 0 else ""  # marca lo que sube la barra más baja
             m.addAction(QAction(need + label, m, triggered=lambda _=False, n=name: self.do(n)))
         sub = m.addMenu("Animación")
-        for name in sorted(self.have):
+        for name in sorted(self.have, key=sprites.label):  # en español, como el menú de la mascota en Android
             if name != sprites.LOOK:
-                sub.addAction(QAction(name, sub, triggered=lambda _=False, n=name: self.preview(n)))
-        for label, fn in (("Chat flotante", self.ui.get("float")), ("Cuidar", self.ui.get("care")), ("Personajes…", self.ui.get("chars")),
+                sub.addAction(QAction(sprites.label(name), sub, triggered=lambda _=False, n=name: self.preview(n)))
+        for label, fn in (("Chat flotante", self.ui.get("float")), ("Cuidar", self.ui.get("care")), ("Personajes…", self.ui.get("chars")), ("Ajustes…", self.ui.get("settings")),
                           ("Salir", QApplication.quit)):
             m.addAction(QAction(label, m, triggered=fn or (lambda: None)))
         m.exec(at)
@@ -648,8 +688,8 @@ class Pet(QWidget):
         a = self.have.get(name)
         if not a:
             return
-        if self.attached and self.seg.rot != 0:  # prueba de pie: se suelta
-            self.fall_from()
+        if not self.on_floor(lambda: self.preview(name, secs)):
+            return
         self.state, self.mirror = "once", False
         self.until = time.monotonic() + (secs or max(2.5, 2 * a["frames"] / a["fps"]))
         self.anim, self.fi, self.acc = name, 0, 0.0
@@ -658,21 +698,29 @@ class Pet(QWidget):
         self.bubble.say(text, self.geometry(), ms)
 
     def wave(self):
+        if not self.on_floor(self.wave):
+            return
         self.state, self.until = "once", time.monotonic() + 2
         self.play("waving")
         self.say("¡Hola! Soy " + self.char.name + ".")
 
     def talk(self, secs: float = 1.5):
+        if not self.on_floor(lambda: self.talk(secs)):
+            return
         self.state, self.until = "once", time.monotonic() + secs
         self.play("talking")
 
     def listen(self, secs: float):
         """Te está escuchando: «listening» si el personaje la tiene; si no, «talking»."""
+        if not self.on_floor(lambda: self.listen(secs)):
+            return
         self.state, self.until = "once", time.monotonic() + secs
         self.play("listening" if "listening" in self.have else "talking")
 
     def do(self, action: str):
         """Acción del tamagotchi: aplica el efecto, anima y habla."""
+        if not self.on_floor(lambda: self.do(action)):
+            return
         text = self.care.act(action)
         self.active_at = time.monotonic()
         if action == "dormir":
@@ -800,6 +848,7 @@ def run(scale: float | None = None):
     from .ui import CareView, CatalogView, CharactersView, NewCharView, AllPromptView, GenBatchView, NeutralPromptView, ProfileView, RefineView, PromptView, SettingsView, RefsView, ReviewView
 
     app = QApplication([])
+    app.setWindowIcon(QIcon(str(Path(__file__).with_name("icon.png"))))  # Ayax, igual que el ícono de Android
     # sin consola (pythonw) los errores desaparecían: se guardan en ~/.fruquis/voice.log
     sys.excepthook = lambda t, v, tb: (log("error", donde="excepción", detalle="".join(traceback.format_exception(t, v, tb))[-1200:]), sys.__excepthook__(t, v, tb))
     threading.excepthook = lambda a: log("error", donde=f"hilo {a.thread.name if a.thread else '?'}",
@@ -817,6 +866,7 @@ def run(scale: float | None = None):
             QMessageBox.warning(None, "Fruquis", str(e))
             return
     pet = Pet(sprites.get(store.get("active", "")), scale or store.get("scale", 0.6), bridge)
+    machine.start()  # índice local (apps, binarios, carpetas) en segundo plano, guardado solo en ~/.fruquis
     voice = pet.voice = Voice(lambda: pet.char.name, lambda: [c.name for c in sprites.list_all().values()], lambda: pet.busy_phase is not None)  # antes que las vistas: Ajustes lista los micrófonos
     shell = MainWindow(pet)
     for name, view in (("chat", ChatView(shell, bridge)), ("care", CareView(shell)), ("chars", CharactersView(shell)), ("catalog", CatalogView(shell)),
@@ -857,12 +907,18 @@ def run(scale: float | None = None):
     voice.enable(bool(store.get("voice", False)))
     chat_view = shell.views["chat"]
     btn = FloatButton(toggle_chat, chat_view.toggle_mic,
-                      lambda m: pet.say("Ahora un clic me dicta una orden 🎙 (clic derecho: volver al chat)" if m == "mic" else "Ahora un clic abre el chat 💬", 4000))
+                      lambda m: (voice.set_mic_mode(m == "mic"), pet.say("Ahora te escucho si dices mi nombre 🎙; un clic me dicta sin nombre (clic derecho: volver al chat)" if m == "mic" else "Ahora un clic abre el chat 💬 (ya no te escucho)", 4000)))
     voice.listening.connect(btn.set_listening)
-    pet.ui = {"chat": lambda: shell.open("chat"), "float": shell.toggle_float, "care": lambda: shell.open("care"), "chars": lambda: shell.open("chars")}
+    pet.ui = {"chat": lambda: shell.open("chat"), "float": shell.toggle_float, "care": lambda: shell.open("care"), "chars": lambda: shell.open("chars"), "settings": lambda: shell.open("settings")}
     pet.followers.append(shell.follow_float)
     app.aboutToQuit.connect(pet.care.save)
     app.aboutToQuit.connect(pet.save_pos)
     btn.show()
     pet.show()
-    app.exec()
+    signal.signal(signal.SIGINT, lambda *_: app.quit())  # Ctrl+C en la terminal
+    tick = QTimer()
+    tick.start(300)
+    tick.timeout.connect(lambda: None)  # deja correr Python para que llegue la señal
+    code = app.exec()
+    sys.stdout.flush()
+    os._exit(code)  # los hilos de audio/Whisper bloqueados dejaban el proceso colgado al salir

@@ -13,6 +13,9 @@ import java.net.URL
 class Ai(val p: SharedPreferences) {
     private fun get(what: String, k: String) = p.getString("${what}_$k", "")!!.trim()
 
+    /** Servidor propio aipi (claude/codex del servidor): POST {url}/api/chat/?key= y /api/image/?key=, imágenes en base64. */
+    private fun server(what: String) = get(what, "kind") == "server"
+
     private fun anthropic(what: String) = what == "chat" && get(what, "kind") == "anthropic"
 
     private fun url(what: String) =
@@ -20,22 +23,30 @@ class Ai(val p: SharedPreferences) {
 
     private fun model(what: String) = get(what, "model").ifEmpty {
         when {
+            server(what) -> ""
             what == "image" -> "gpt-image-1"
             anthropic(what) -> "claude-haiku-5-5"
             else -> "gpt-4o-mini"
         }
     }
 
-    private fun post(what: String, path: String, body: JSONObject): JSONObject {
+    private fun post(what: String, path: String, body: JSONObject, readMs: Int = 120000): JSONObject {
         val key = get(what, "key")
-        if (get(what, "url").isEmpty() && key.isEmpty()) throw Exception("Falta la clave de la API (Ajustes IA).")
-        val c = URL(url(what) + path).openConnection() as HttpURLConnection
+        if (get(what, "url").isEmpty() && (key.isEmpty() || server(what))) throw Exception("Falta la ${if (server(what)) "URL del servidor" else "clave de la API"} (Ajustes IA).")
+        var full = url(what) + path
+        if (server(what)) {  // la URL de Ajustes es el enlace personal (con ?key=); también vale la base + clave aparte
+            if ("/api/" in url(what)) full = url(what)
+            if ("key=" !in full && key.isNotEmpty()) full += (if ("?" in full) "&" else "?") + "key=" + java.net.URLEncoder.encode(key, "UTF-8")
+            if ("key=" !in full) throw Exception("Falta el enlace del servidor con su clave (Ajustes IA).")
+        }
+        val c = URL(full).openConnection() as HttpURLConnection
         c.requestMethod = "POST"
         c.connectTimeout = 15000
-        c.readTimeout = 120000
+        c.readTimeout = readMs
         c.doOutput = true
         c.setRequestProperty("Content-Type", "application/json")
-        if (key.isNotEmpty()) {
+        c.setRequestProperty("User-Agent", "fruquis-android")
+        if (key.isNotEmpty() && !server(what)) {
             if (anthropic(what)) {
                 c.setRequestProperty("x-api-key", key)
                 c.setRequestProperty("anthropic-version", "2023-06-01")
@@ -54,6 +65,11 @@ class Ai(val p: SharedPreferences) {
     fun chat(prompt: String, baseSystem: String, jpegs: List<ByteArray> = emptyList()): String {
         val system = baseSystem + Place.hint()
         val imgs = jpegs.map { Base64.encodeToString(it, Base64.NO_WRAP) }
+        if (server("chat")) {
+            val body = obj("prompt" to prompt, "system" to system, "images" to JSONArray(imgs))
+            model("chat").let { if (it.isNotEmpty()) body.put("model", it) }
+            return post("chat", "/api/chat/", body, 200000).getString("text").trim()
+        }
         val text = obj("type" to "text", "text" to prompt)
         if (anthropic("chat")) {
             val parts = JSONArray()
@@ -74,6 +90,7 @@ class Ai(val p: SharedPreferences) {
 
     /** PNG generado por la API de imágenes (formato OpenAI; sin imágenes de referencia por ahora: /images/generations). */
     fun image(prompt: String): ByteArray {
+        if (server("image")) return Base64.decode(post("image", "/api/image/", obj("prompt" to prompt), 900000).getString("image"), Base64.DEFAULT)
         val d = post("image", "/images/generations", obj("model" to model("image"), "prompt" to prompt, "size" to "1024x1024", "n" to 1))
             .getJSONArray("data").getJSONObject(0)
         return if (d.has("b64_json")) Base64.decode(d.getString("b64_json"), Base64.DEFAULT) else URL(d.getString("url")).openStream().use { it.readBytes() }

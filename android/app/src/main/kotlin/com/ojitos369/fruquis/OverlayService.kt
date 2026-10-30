@@ -9,12 +9,19 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
+import android.text.TextUtils
 import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.MotionEvent
@@ -43,6 +50,7 @@ class OverlayService : Service() {
     private var vx = 0f
     private var vy = 0f
     private var rot = 0f
+    private var flip = 1f  // -1: espejo horizontal (trepar o agarrada con la pared a la derecha)
     private var size = 0
     private var state = IDLE
     private var dir = 1
@@ -59,6 +67,9 @@ class OverlayService : Service() {
     private var menuClosed = 0L
     private var careAt = 0L
     private var lowAt = 0L
+    private var bubble: BubbleView? = null  // globo de diálogo (ventana propia que sigue a la mascota)
+    private lateinit var blp: WindowManager.LayoutParams
+    private var bubbleUntil = 0L
 
     override fun onBind(i: Intent?): IBinder? = null
 
@@ -85,6 +96,11 @@ class OverlayService : Service() {
             if (freeSide.isNotEmpty() && (state == WALL || state == CLING)) setState(FALL, 0)  // se suelta de la pared y cae al piso
             return START_NOT_STICKY
         }
+        if (i?.action == SAY && view != null) {  // globo con la respuesta o con lo que está haciendo (thought = nube de pensamiento)
+            val t = i.getStringExtra("text") ?: ""
+            if (t.isEmpty()) hideBubble() else say(t, i.getLongExtra("ms", 6000), i.getBooleanExtra("thought", false))
+            return START_NOT_STICKY
+        }
         if (i?.action == RELOAD && view != null) {  // otro personaje, animación editada o nuevo tamaño (Ajustes)
             if (sp.load(MainActivity.activeDir(this))) sp.start(anim)
             resize()
@@ -95,7 +111,12 @@ class OverlayService : Service() {
             preview(i.getStringExtra("anim") ?: "idle")
             return START_NOT_STICKY
         }
-        startInForeground()
+        try {
+            startInForeground()
+        } catch (e: Exception) {  // reinicio automático (START_STICKY) que el sistema no deja pasar a primer plano
+            stopSelf()
+            return START_NOT_STICKY
+        }
         if (view == null) {
             if (!Settings.canDrawOverlays(this) || !sp.load(MainActivity.activeDir(this)) || !sp.ok) {
                 Toast.makeText(this, "Falta el permiso de superposición o importar un personaje", Toast.LENGTH_LONG).show()
@@ -104,7 +125,7 @@ class OverlayService : Service() {
             }
             create()
         }
-        return START_NOT_STICKY
+        return START_STICKY  // si el sistema la cierra por memoria, vuelve sola
     }
 
     private fun startInForeground() {
@@ -113,7 +134,7 @@ class OverlayService : Service() {
         val stop = PendingIntent.getService(this, 0, Intent(this, OverlayService::class.java).setAction(STOP), PendingIntent.FLAG_IMMUTABLE)
         val n = Notification.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.ic_menu_gallery).setContentTitle("Fruquis está flotando")
             .setContentText("Toca para quitarla de la pantalla").setContentIntent(stop)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Quitar", stop).build()
+            .setOngoing(true).addAction(android.R.drawable.ic_menu_close_clear_cancel, "Quitar", stop).build()
         if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE) else startForeground(1, n)
     }
 
@@ -191,10 +212,14 @@ class OverlayService : Service() {
             else -> if (anim == "listening" || anim.isNotEmpty() && ms > 0) anim else "idle"
         }
         sp.start(anim)
+        // trepar y agarrada se dibujan ya en la pared (de pie, pared a su izquierda): sin girar, solo se voltea si la pared está a la derecha
+        val onWall = (s == WALL || s == CLING) && sp.current in WALL_ANIMS
+        if (onWall) rot = 0f
+        flip = if (onWall && side > 0) -1f else 1f
     }
 
     /** Menú al tocarla, como Pet.menu del escritorio: acciones del tamagotchi (❗ marca la que sube la barra más baja), «Animación» para
-     *  reproducir cualquiera, abrir la app en Chat / Cuidar / Personajes y quitarla de la pantalla. Mientras está abierto la mascota se queda quieta. */
+     *  reproducir cualquiera, abrir la app en Chat / Cuidar / Personajes / Ajustes y quitarla de la pantalla. Mientras está abierto la mascota se queda quieta. */
     private fun showMenu(anims: Boolean = false) {
         closeMenu()
         val pad = (8 * density).toInt()
@@ -216,7 +241,7 @@ class OverlayService : Service() {
                 item((if (w >= 0 && a.fx[w] > 0) "❗ " else "") + "${a.icon}  ${a.label}") { closeMenu(); care.act(a); anim = a.anim; setState(IDLE, 3000) }
             }
             item("🎬  Animación  ›") { showMenu(true) }
-            listOf("chat" to "💬  Chat", "care" to "🍙  Cuidar", "chars" to "🧸  Personajes").forEach { (tab, label) ->
+            listOf("chat" to "💬  Chat", "care" to "🍙  Cuidar", "chars" to "🧸  Personajes", "settings" to "⚙  Ajustes").forEach { (tab, label) ->
                 item(label) {
                     closeMenu()
                     startActivity(Intent(this, MainActivity::class.java).putExtra("tab", tab).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
@@ -280,7 +305,7 @@ class OverlayService : Service() {
             val low = care.worst()
             if (low >= 0 && now - lowAt > 300_000) {
                 lowAt = now
-                Toast.makeText(this, "${Care.ICONS[low]} Tengo poca ${Care.NAMES[low].lowercase()}… toca para cuidarme", Toast.LENGTH_LONG).show()
+                say("${Care.ICONS[low]} Tengo poca ${Care.NAMES[low].lowercase()}… toca para cuidarme", 8000, false)
             }
         }
         val ls = now < VoiceService.listenUntil  // te está escuchando: se queda quieta con «listening»
@@ -324,12 +349,14 @@ class OverlayService : Service() {
             }
         }  // DRAG: lo mueve el dedo (onTouchEvent ya actualiza la ventana)
         v.rotation = rot  // la vista (cuadrada) gira sobre su centro
+        v.scaleX = flip
         if (lp.x != x.toInt() || lp.y != y.toInt()) {
             lp.x = x.toInt()
             lp.y = y.toInt()
             wm.updateViewLayout(v, lp)
         }
         v.invalidate()
+        placeBubble()
         h.postDelayed(::tick, 33)
     }
 
@@ -339,13 +366,113 @@ class OverlayService : Service() {
             "size=$size view=${view?.let { "${it.width}x${it.height} vis=${it.visibility} alpha=${it.alpha} rot=${it.rotation} attached=${it.isAttachedToWindow}" }}")
     }
 
+    private fun say(text: String, ms: Long, thought: Boolean) {
+        val b = bubble ?: BubbleView().also {
+            blp = WindowManager.LayoutParams(1, 1, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.LEFT }
+            wm.addView(it, blp)
+            bubble = it
+        }
+        b.set(text, thought)
+        bubbleUntil = System.currentTimeMillis() + ms
+        placeBubble(true)
+    }
+
+    private fun hideBubble() {
+        bubble?.let { wm.removeView(it) }
+        bubble = null
+    }
+
+    /** Encima de la mascota con la flechita hacia ella; si no cabe, debajo (como Bubble.say del escritorio). */
+    private fun placeBubble(force: Boolean = false) {
+        val b = bubble ?: return
+        if (System.currentTimeMillis() > bubbleUntil) return hideBubble()
+        val scr = screen()
+        val cx = x + size / 2
+        val bx = (cx - b.bw / 2).toInt().coerceIn(0, maxOf(0, scr.widthPixels - b.bw))
+        var by = (y - b.bh).toInt()
+        val above = by >= 0
+        if (!above) by = (y + size).toInt()
+        val tx = (cx - bx).coerceIn(18 * density, b.bw - 18 * density)
+        if (!force && blp.x == bx && blp.y == by && b.above == above && b.tailX == tx) return
+        b.above = above
+        b.tailX = tx
+        blp.x = bx
+        blp.y = by
+        blp.width = b.bw
+        blp.height = b.bh
+        wm.updateViewLayout(b, blp)
+        b.invalidate()
+    }
+
     override fun onDestroy() {
         h.removeCallbacksAndMessages(null)
+        hideBubble()
         closeMenu()
         view?.let { wm.removeView(it) }
         view = null
         running = false
         super.onDestroy()
+    }
+
+    /** Globo como Bubble de fruquis/app.py: relleno crema, borde morado, flechita a la mascota; `thought` = nube con dos burbujitas. Tocarlo lo cierra. */
+    private inner class BubbleView : View(this@OverlayService) {
+        private val d = density
+        private val text = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF2B2140.toInt(); textSize = 14 * resources.displayMetrics.scaledDensity }
+        private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFBE9.toInt() }
+        private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF8A7BD6.toInt(); style = Paint.Style.STROKE; strokeWidth = 2 * d; strokeJoin = Paint.Join.ROUND }
+        private val tail = 11 * d
+        private val padH = 12 * d
+        private val padV = 8 * d
+        private var lay: StaticLayout? = null
+        private var thought = false
+        var above = true
+        var tailX = 0f
+        var bw = 1
+        var bh = 1
+
+        fun set(raw: String, th: Boolean) {
+            thought = th
+            val t = raw.replace(Regex("\\[([^\\]]+)]\\([^)]+\\)"), "$1").replace(Regex("\\*\\*|__|`|^#+ ", RegexOption.MULTILINE), "")  // markdown simple → texto
+            val maxW = (minOf(280 * d, screen().widthPixels * 0.8f) - 2 * padH).toInt()
+            val w = minOf(maxW, Math.ceil(Layout.getDesiredWidth(t, text).toDouble()).toInt()).coerceAtLeast(1)
+            lay = StaticLayout.Builder.obtain(t, 0, t.length, text, w).setMaxLines(14).setEllipsize(TextUtils.TruncateAt.END).build()
+            bw = (w + 2 * padH).toInt()
+            bh = (lay!!.height + 2 * padV + tail).toInt()
+        }
+
+        override fun onDraw(c: Canvas) {
+            val l = lay ?: return
+            val top = if (above) 0f else tail
+            val body = RectF(1.5f * d, top + 1.5f * d, bw - 1.5f * d, top + bh - tail - 1.5f * d)
+            val path = Path()
+            if (thought) {
+                val r = minOf(body.height(), 40 * d) / 2
+                path.addRoundRect(body, r, r, Path.Direction.CW)
+                val sgn = if (above) 1 else -1
+                val y0 = if (above) body.bottom else body.top
+                path.addCircle(tailX, y0 + sgn * 4 * d, 4 * d, Path.Direction.CW)
+                path.addCircle(tailX, y0 + sgn * 9.5f * d, 2.5f * d, Path.Direction.CW)
+            } else {
+                path.addRoundRect(body, 12 * d, 12 * d, Path.Direction.CW)
+                val tri = Path().apply {
+                    if (above) { moveTo(tailX - 9 * d, body.bottom - 1); lineTo(tailX + 9 * d, body.bottom - 1); lineTo(tailX, body.bottom + tail - 2 * d) }
+                    else { moveTo(tailX - 9 * d, body.top + 1); lineTo(tailX + 9 * d, body.top + 1); lineTo(tailX, body.top - tail + 2 * d) }
+                    close()
+                }
+                path.op(tri, Path.Op.UNION)  // un solo contorno: no se marca la base de la flecha
+            }
+            c.drawPath(path, fill)
+            c.drawPath(path, edge)
+            c.translate(padH, top + padV)
+            l.draw(c)
+        }
+
+        override fun onTouchEvent(e: MotionEvent): Boolean {
+            if (e.action == MotionEvent.ACTION_UP) hideBubble()
+            return true
+        }
     }
 
     private inner class PetView : View(this@OverlayService) {
@@ -381,7 +508,7 @@ class OverlayService : Service() {
                 }
                 MotionEvent.ACTION_MOVE -> {
                     // jalar = mover; menos que el umbral del sistema cuenta como toque (antes 12 dp fijos: un dedo tembloroso la arrastraba sin querer)
-                    if (!dragging && hypot(rx - downX, ry - downY) > slop * 1.5f) { dragging = true; rot = 0f; this.rotation = 0f; setState(DRAG, 0) }
+                    if (!dragging && hypot(rx - downX, ry - downY) > slop * 1.5f) { dragging = true; rot = 0f; flip = 1f; this.rotation = 0f; this.scaleX = 1f; setState(DRAG, 0) }
                     if (dragging) {
                         val dtm = maxOf(1L, now - lastT) / 1000f
                         mx = 0.5f * mx + 0.5f * (rx - lastX) / dtm  // velocidad del dedo (suavizada) para el lanzamiento
@@ -420,8 +547,16 @@ class OverlayService : Service() {
         const val MOVE = "com.ojitos369.fruquis.MOVE"
         const val FREE = "com.ojitos369.fruquis.FREE"
         const val PREVIEW = "com.ojitos369.fruquis.PREVIEW"
+        const val SAY = "com.ojitos369.fruquis.SAY"
         const val CHANNEL = "pet"
         @Volatile var running = false
+
+        /** Globo junto a la mascota flotante (texto vacío = quitarlo). Devuelve false si no está flotando (entonces usa un Toast). */
+        fun bubble(c: Context, text: String, ms: Long = maxOf(6000L, text.length * 70L), thought: Boolean = false): Boolean {
+            if (!running) return false
+            c.startService(Intent(c, OverlayService::class.java).setAction(SAY).putExtra("text", text).putExtra("ms", ms).putExtra("thought", thought))
+            return true
+        }
         private const val IDLE = 0
         private const val WALK = 1
         private const val WALL = 2
@@ -431,6 +566,7 @@ class OverlayService : Service() {
         private const val SIZE_DP = 200f  // al 100 %; 0.6 (predeterminado) = 120 dp
         private const val SPEED_DP = 60f
         private const val CLIMB_DP = 70f
+        private val WALL_ANIMS = setOf("climbing", "clinging")  // como WALL_ANIMS de fruquis/app.py
         private const val GRAVITY_DP = 1400f
     }
 }
