@@ -15,7 +15,7 @@ from . import store
 BUNDLED = Path(getattr(sys, "_MEIPASS", Path(__file__).parent.parent)) / "fruquis" / "characters"
 USER = store.HOME / "characters"
 DEFAULT_CELL = (192, 208)
-LOOK = "look"  # 16 cuadros (22.5° c/u) en filas consecutivas de 8
+LOOK = "look"  # 16 cuadros (22.5° c/u) en filas consecutivas (4 por fila)
 
 # nombre: (obligatoria, para qué sirve, cuadros sugeridos, respaldo, acción para el prompt de generación)
 WANTED = {
@@ -26,20 +26,21 @@ WANTED = {
     "waving": (True, "saluda", 4, None, "Friendly greeting loop with whatever this character can greet with (an arm, a tail, a tentacle, a wing, or a head tilt if it has no limbs). No wave marks or symbols."),
     "failed": (True, "triste/error", 8, None, "Sad or dismayed reaction: slump, droop and partial recovery, expressed through the character's own posture and face."),
     "waiting": (True, "espera", 6, None, "Patient waiting: small head tilts and weight shifts typical of this character's body."),
-    "review": (True, "pensando/trabajando", 6, None, "Focused thinking: concentrating pose with small head movements, using the character's own body language."),
+    "review": (True, "pensando/trabajando", 6, None, "Focused thinking: concentrating pose with small head movements, using the character's own body language. A small prop that fits the thinking (a tiny notepad, a magnifier) may be drawn if the character can hold or use it."),
     "talking": (False, "habla (mensajes y chat)", 4, "waving", "Speaking loop: the mouth (or its equivalent) opens and closes with small head bobs. No speech bubbles or text."),
-    "sleeping": (False, "duerme", 4, "waiting", "Asleep in this character's natural resting pose (curled, coiled, lying, perched...): eyes closed, slow breathing cycle. No 'Zzz' text or symbols."),
+    "sleeping": (False, "duerme", 4, "waiting", "Asleep in this character's natural resting pose (curled, coiled, lying, perched...): eyes closed, slow breathing cycle. May rest on a simple prop it would really use (small pillow, leaf bed, blanket). No 'Zzz' text or symbols."),
     "sitting": (False, "sentada en un borde", 4, "idle", "Resting in this character's natural 'seated' pose on a ledge (legs dangling if it has legs; coiled tail, hovering or perched if it does not), small blinks and sways."),
     "dragged": (False, "colgada mientras la arrastras", 3, "waiting", "Hanging as if held from the top of the head: the body dangles naturally and sways gently."),
     "falling": (False, "cae", 3, "jumping", "Falling: surprised face, body parts trailing upward as they would on this character. Loop."),
     "climbing": (False, "trepa paredes (se dibuja de pie, la app la rota)", 6, "running-right", "Climbing cycle in this character's own way (limbs, coiling, clinging), drawn UPRIGHT like a locomotion cycle. The app rotates it onto walls and ceilings."),
-    "poking": (False, "pica algo", 5, "jumping", "Reaches out with whatever the character has (an arm, a tail tip, a tentacle, its nose) to press something in front of it, then retracts."),
-    "reading": (False, "lee / mira con atención (cuando analiza tu ventana)", 4, "review", "Reading attentively: head slightly lowered, eyes scanning left and right, small nods."),
-    "typing": (False, "teclea", 4, "review", "Quickly taps forward with its own appendages as if typing on an invisible keyboard (no keyboard drawn)."),
-    "pampered": (False, "la están mimando (feliz, se deja querer)", 5, "waving", "Being petted and pampered: eyes closed in bliss, leaning into the touch, small happy wiggle. No hearts or effects drawn."),
-    "playing": (False, "juega", 6, "jumping", "Playful: bouncing, spinning or batting at an invisible toy, in this character's own way."),
-    "eating": (False, "come", 6, "waving", "Eating: brings invisible food to the mouth with its own limbs (or lunges at it if it has none), cheeks or body puffing while chewing, happy. No food drawn."),
-    "cleaning": (False, "se limpia", 6, "waving", "Cleaning itself in this character's own way (grooming with limbs, shaking, rubbing against itself). No bubbles or effects drawn."),
+    "clinging": (False, "agarrada quieta a una pared o al techo (se dibuja de pie, la app la rota)", 4, "idle", "Holding on while stationary on a wall or ceiling, in this character's own way (gripping with limbs, claws, tail, suction, coiled body), small sways and blinks. Drawn UPRIGHT like a resting pose; the app rotates it onto walls and ceilings."),
+    "poking": (False, "pica algo", 5, "jumping", "Reaches out with whatever the character has (an arm, a tail tip, a tentacle, its nose) to press something in front of it, then retracts. Draw the pressed object (a button, a small panel or screen) sized for this character."),
+    "reading": (False, "lee / mira con atención (cuando analiza tu ventana)", 4, "review", "Reading attentively: DRAW the thing being read, held or placed the way THIS character can handle it (an open book, a notebook, a scroll, or floating lines of text if it has no hands), head slightly lowered, eyes scanning left and right, small page turns and nods."),
+    "typing": (False, "teclea", 4, "review", "DRAW a keyboard (or laptop) scaled to this character and type on it quickly with its own appendages (fingers, paws, claws, tail tip, tentacles, beak...), eyes on the keys, small head bobs."),
+    "pampered": (False, "la están mimando (feliz, se deja querer)", 5, "waving", "Being petted and pampered: eyes closed in bliss, leaning into the touch, small happy wiggle. No hands, hearts or effects drawn."),
+    "playing": (False, "juega", 6, "jumping", "Playful: DRAW a toy suited to this creature (a ball, a yarn ball, a feather, a stick, a bubble...) and bounce, spin, chase or bat it in this character's own way."),
+    "eating": (False, "come", 6, "waving", "Eating: DRAW food that fits this creature's diet (fruit, meat, fish, seeds, a cookie, crystals...), bring it to the mouth with its own limbs (or lunge at it if it has none) and visibly bite and chew, cheeks or body puffing, the food getting smaller, happy."),
+    "cleaning": (False, "se limpia", 6, "waving", "Cleaning itself in this character's own way (grooming with limbs, shaking, rubbing against itself). DRAW a small sponge, towel or brush and visible soap foam: white suds and a few soap bubbles covering parts of its body, which it scrubs and then rinses off."),
 }
 STYLE = ("Pet-safe sprite: compact full-body mascot, readable in a {w}x{h} cell, clear silhouette, simple face, stable palette/materials, "
          "and crisp edges for chroma-key extraction.")
@@ -72,13 +73,13 @@ class Character:
     @property
     def brief(self) -> str:
         f = self.dir / "brief.md"
-        base = f.read_text().strip() if f.exists() else self.description
+        base = store.read_text(f).strip() if f.exists() else self.description
         return (base + (" " if base else "") + f"Detailed visual description: {self.identity}").strip() if self.identity else base
 
 
 def _load(d: Path) -> Character | None:
     try:
-        j = json.loads((d / "character.json").read_text())
+        j = json.loads(store.read_text(d / "character.json"))
     except Exception:
         return None
     anims = {n: {**a, "sheet": d / a["sheet"]} for n, a in j["anims"].items()}
@@ -93,6 +94,14 @@ def list_all() -> dict:
             if (c := _load(d)):
                 out[c.id] = c
     return out
+
+
+def delete(cid: str):
+    """Borra el personaje cargado por el usuario (y su tamagotchi). Los incluidos con la app no se pueden borrar. SystemExit si no se puede."""
+    if not (USER / cid).is_dir() or cid not in list_all() or (BUNDLED / cid).is_dir():
+        raise SystemExit("Los personajes incluidos con la app no se pueden eliminar.")
+    shutil.rmtree(USER / cid)
+    (store.HOME / "care" / f"{cid}.json").unlink(missing_ok=True)
 
 
 def get(cid: str) -> Character:
@@ -117,29 +126,31 @@ def writable_dir(cid: str) -> Path:
 
 def _save(d: Path, name, description, cell, anims):
     try:
-        j = json.loads((d / "character.json").read_text())  # se conservan los demás campos (identidad, anatomía, acciones…)
+        j = json.loads(store.read_text(d / "character.json"))  # se conservan los demás campos (identidad, anatomía, acciones…)
     except Exception:
         j = {}
     j.update({"name": name, "description": description, "cell": list(cell), "anims": {n: {**a, "sheet": Path(a["sheet"]).name} for n, a in anims.items()}})
-    (d / "character.json").write_text(json.dumps(j, indent=1, ensure_ascii=False))
+    store.write_text(d / "character.json", json.dumps(j, indent=1, ensure_ascii=False))
 
 
-def set_profile(cid: str, identity=None, anatomy=None, actions=None):
-    """Guarda la identidad visual, la anatomía y las acciones adaptadas del personaje (lo que no se pasa se conserva)."""
+def set_profile(cid: str, identity=None, anatomy=None, actions=None, name=None, description=None):
+    """Guarda nombre, descripción, identidad visual, anatomía y acciones adaptadas del personaje (lo que no se pasa se conserva)."""
     d = writable_dir(cid)
     c = get(cid)
-    _save(d, c.name, c.description, c.cell, c.anims)
-    j = json.loads((d / "character.json").read_text())
+    _save(d, name or c.name, c.description if description is None else description, c.cell, c.anims)
+    if description is not None:
+        store.write_text(d / "brief.md", description.strip() + "\n")  # `brief` lee este archivo antes que la descripción
+    j = json.loads(store.read_text(d / "character.json"))
     for k, v in (("identity", identity), ("anatomy", anatomy), ("actions", actions)):
         if v is not None:
             j[k] = v
-    (d / "character.json").write_text(json.dumps(j, indent=1, ensure_ascii=False))
+    store.write_text(d / "character.json", json.dumps(j, indent=1, ensure_ascii=False))
 
 
 def create(name: str, description: str, cell=DEFAULT_CELL) -> Character:
     cid = "".join(ch for ch in name.lower().replace(" ", "-") if ch.isalnum() or ch == "-") or "personaje"
     d = writable_dir(cid)
-    (d / "brief.md").write_text(description.strip() + "\n")
+    store.write_text(d / "brief.md", description.strip() + "\n")
     _save(d, name, description, cell, {})
     return get(cid)
 
@@ -334,7 +345,7 @@ def report(c: Character) -> list:
             use = f" (mientras tanto: '{fb}')" if fb else ""
             lines.append(f"{'FALTA' if req else 'opcional'}: {name} — {why}. ~{n} cuadros{use}")
     if LOOK not in c.anims:
-        lines.append("opcional: look — 16 cuadros (22.5° c/u), 2 filas de 8: sigue el cursor con la mirada")
+        lines.append("opcional: look — 16 cuadros (22.5° c/u), 4 filas de 4: sigue el cursor con la mirada")
     lines += ["", f"Formato: celdas de {c.cell[0]}x{c.cell[1]} px, una animación por fila, fondo transparente o #FF00FF."]
     return lines
 
@@ -435,11 +446,11 @@ Primero, revisa las variables. Si alguna está vacía, usa exactamente el valor 
 
 Usa la imagen adjunta como referencia de identidad y diseño. Conserva el mismo personaje u objeto en todos los cuadros: silueta, proporciones, colores, cara, ropa, accesorios, marcas, materiales, perspectiva e iluminación. Mantén el estilo visual indicado. No añadas personajes, objetos ni detalles que no aparezcan en la referencia, salvo que se soliciten en los detalles adicionales.
 
-Crea una sola imagen con el spritesheet completo. Organiza los cuadros en la distribución especificada, en orden de izquierda a derecha y de arriba abajo. Cada cuadro debe mostrar una pose completa dentro de su propia celda. Mantén la escala y el punto de apoyo del personaje u objeto consistentes; permite que cambien solo cuando la acción lo requiera, por ejemplo durante un salto.
+Crea una sola imagen con el spritesheet completo. Organiza los cuadros en la distribución especificada, en orden de izquierda a derecha y de arriba abajo, con un máximo de 4 cuadros por fila: si hay más, continúa en más filas (nunca más de 4 columnas). Cada cuadro debe mostrar una pose completa dentro de su propia celda. Mantén la escala y el punto de apoyo del personaje u objeto consistentes; permite que cambien solo cuando la acción lo requiera, por ejemplo durante un salto.
 
 Haz que cada cuadro avance la animación de forma clara y natural. Evita poses duplicadas, cambios bruscos, deformaciones, variaciones de estilo, recortes, cuadros vacíos y elementos que invadan celdas vecinas. Si la animación es un loop, haz que la transición entre el último y el primer cuadro se vea fluida.
 
-Usa el fondo indicado. Si es transparente, entrega transparencia real. Si es de color sólido, mantén exactamente el mismo color en todas las celdas y evita que ese color aparezca en el personaje u objeto.
+Usa el fondo indicado. Si es transparente, entrega transparencia real. Si es de color sólido, mantén exactamente el mismo color en todas las celdas y evita que ese color aparezca en el personaje u objeto. Un fondo de color es un color PLANO y uniforme: nunca dibujes cuadrícula de transparencia (casillas grises/blancas), degradados, ruido, viñeta ni sombras proyectadas sobre el fondo.
 
 No incluyas texto, números, títulos, etiquetas, guías, bordes de celda, marcas de agua, sombras sueltas ni decoración fuera de la animación.
 
@@ -456,15 +467,29 @@ TEMPLATE_VARS, TEMPLATE_INSTR = TEMPLATE.split(MARK)[0], MARK + TEMPLATE.split(M
 
 
 def layout_cols(n: int) -> int:
-    """Columnas de la distribución sin celdas vacías: una fila hasta 7 cuadros; si no, el divisor más cercano a 4 (8 → 4×2, 12 → 4×3)."""
-    if n <= 7:
+    """Columnas de la distribución: nunca más de 4 por fila (8 → 4×2, 6 → 3×2, 16 → 4×4); si no hay divisor, 4 y la última fila queda incompleta (5 → 4+1)."""
+    if n <= 4:
         return n
-    divs = [d for d in (4, 5, 3, 6, 2) if n % d == 0]
-    return divs[0] if divs else n
+    return next((d for d in (4, 3, 2) if n % d == 0), 4)
 
 
+PROPS_NOTE = ("Objetos: cuando la acción lo pida (teclado, comida, libro, juguete…), DIBÚJALOS completos y a una escala creíble para este personaje, "
+              "en el mismo estilo, paleta y grosor de línea, sin salirse de la celda y sin usar el color del fondo. Elige el objeto y la forma de usarlo "
+              "según la criatura (una serpiente teclea con la punta de la cola, un pájaro picotea la comida, un pulpo sostiene el libro con tentáculos). "
+              "Los objetos no cambian la identidad del personaje.")
 ANATOMY_NOTE = ("Adapta el movimiento a la anatomía única de este personaje: usa solo las partes del cuerpo que realmente tiene (no le inventes piernas, "
                 "brazos, alas, manos ni nada que no aparezca en la referencia) y reinterpreta la acción con sus propias partes y su manera natural de moverse.")
+
+
+# objeto que DEBE verse en cada cuadro, aunque la acción adaptada por la IA no lo mencione
+REQUIRED_PROP = {
+    "cleaning": "soap foam (white suds and bubbles) on the body plus a sponge or brush",
+    "eating": "food that fits this creature's diet, getting smaller with each bite",
+    "typing": "a keyboard or laptop scaled to the character",
+    "reading": "an open book, notebook or scroll",
+    "playing": "a toy (ball, yarn, feather...)",
+    "poking": "a button or small panel being pressed",
+}
 
 
 def _vars(c: Character, anim: str, frames=None, action=None, background="", distribution="", direction="", cycle="", extra="", note=True) -> dict:
@@ -478,7 +503,8 @@ def _vars(c: Character, anim: str, frames=None, action=None, background="", dist
     return dict(animacion=f"{anim}" + (f" ({w[1]})" if w else "") + (f": {act}" if act else ""), cuadros=n, distribucion=dist,
                 tamano=f"{c.cell[0]} × {c.cell[1]} px", fondo=background, ciclo=cycle or ("una sola vez, sin repetir" if anim == "jumping" else ""),
                 direccion=dir_, estilo="",
-                detalles=((extra + " ") if extra else "") + (NEUTRAL_NOTE + " " if (note and c.neutral) else "") + ANATOMY_NOTE + " "
+                detalles=((extra + " ") if extra else "") + (f"OBJETO OBLIGATORIO, visible y completo en TODOS los cuadros: {REQUIRED_PROP[anim]}. " if anim in REQUIRED_PROP else "")
+                + (NEUTRAL_NOTE + " " if (note and c.neutral) else "") + ANATOMY_NOTE + " " + PROPS_NOTE + " "
                 + (f"Anatomía de este personaje: {c.anatomy} " if c.anatomy else "") + f"Identidad del personaje: {c.brief}")
 
 

@@ -4,3 +4,6 @@ psutil
 numpy
 scipy
 pynput
+faster-whisper
+sounddevice
+pycaw; sys_platform == "win32"

@@ -34,7 +34,11 @@ def cfg(what: str) -> dict:
 
 
 def api_on(what: str) -> bool:
-    return cfg(what)["mode"] == "api"
+    c = cfg(what)
+    if c["mode"] != "api":
+        return False
+    # API oficial sin clave y con el binario instalado: se usa el binario en vez de fallar con «Falta la clave»
+    return not (c["official"] and not c["key"] and binaries.resolve("claude" if what == "chat" else "codex"))
 
 
 def chat_ready() -> bool:
@@ -107,11 +111,13 @@ def api_image(prompt: str, refs: list = (), timeout: int = 600) -> bytes:
 def vision(prompt: str, images: list = (), model: str = "haiku", effort: str = "medium", timeout: int = 150) -> str | None:
     """Pregunta de un solo turno que mira imágenes y devuelve texto: por API si está activada o con `claude -p` (herramienta Read). None si no
     hay IA disponible o falla. Lo usan el análisis de personajes, la verificación de identidad y la detección de animaciones."""
+    epoch = _epoch
     if api_on("chat"):
         try:
-            return api_text(prompt, images=images, timeout=timeout)
+            out = api_text(prompt, images=images, timeout=timeout)
         except AIError:
             return None
+        return None if epoch != _epoch else out  # la API no se puede abortar: si se canceló, se descarta la respuesta
     exe = binaries.resolve("claude")
     if not exe:
         return None
@@ -119,12 +125,29 @@ def vision(prompt: str, images: list = (), model: str = "haiku", effort: str = "
     cmd = [*binaries.argv(exe), "-p", "--model", model, "--effort", effort, "--no-session-persistence", "--tools", "Read", "--allowedTools", "Read"]
     for d in dirs:
         cmd += ["--add-dir", d]
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                         cwd=dirs[0], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    _procs.add(p)
     try:
-        r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=dirs[0],
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        out, _ = p.communicate(prompt, timeout=timeout)
     except subprocess.TimeoutExpired:
+        p.kill()
         return None
-    return r.stdout
+    finally:
+        _procs.discard(p)
+    return None if epoch != _epoch else out
+
+
+_procs, _epoch = set(), 0
+
+
+def cancel():
+    """Aborta los análisis con IA en curso (`vision`): mata el proceso `claude` y descarta lo que devuelva la API."""
+    global _epoch
+    _epoch += 1
+    for p in list(_procs):
+        if p.poll() is None:
+            p.kill()
 
 
 def test(what: str) -> tuple:

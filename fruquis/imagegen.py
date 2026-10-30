@@ -56,13 +56,18 @@ def cancel(key=None):
                 _cancelled.add(k)
                 if p.poll() is None:
                     p.kill()
+        if isinstance(key, int) and key not in _procs:  # trabajo entre dos procesos: no arrancará el siguiente
+            _cancelled.add(key)
 
 
 def generate(prompt: str, refs: list, timeout: int = 900, key=None, labels: list | None = None) -> bytes:
     """Pide UNA imagen a ChatGPT (Codex) con imágenes de referencia; devuelve los bytes del PNG generado. Seguro en paralelo: la imagen de cada
     ejecución se identifica por el «session id» que imprime Codex (cada sesión guarda las suyas en su propia carpeta)."""
+    if key in _cancelled:
+        _cancelled.discard(key)
+        raise SystemExit("Generación cancelada.")
     if provider.api_on("image"):
-        head = ("Imágenes de referencia adjuntas, en este orden:\n" + "\n".join(f"{i}. {t}" for i, t in enumerate(labels, 1)) + "\n\n") if labels else ""
+        head =("Imágenes de referencia adjuntas, en este orden:\n" + "\n".join(f"{i}. {t}" for i, t in enumerate(labels, 1)) + "\n\n") if labels else ""
         try:
             return provider.api_image(head + prompt, refs, timeout)
         except provider.AIError as e:
@@ -77,7 +82,7 @@ def generate(prompt: str, refs: list, timeout: int = 900, key=None, labels: list
     head = ("Imágenes de referencia adjuntas, en este orden:\n" + "\n".join(f"{i}. {t}" for i, t in enumerate(labels, 1)) + "\n\n") if labels else ""
     msg = ("Usa tu herramienta de generación de imágenes para crear UNA imagen siguiendo exactamente estas instrucciones, usando las imágenes "
            f"adjuntas como referencia:\n\n{head}{prompt}\n\nNo escribas código ni archivos; solo genera la imagen y responde 'listo'.")
-    cmd = [*argv(exe), "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only"]
+    cmd = [*argv(exe), "exec", "-m", os.environ.get("CODEX_IMAGE_MODEL", "gpt-6-luna"), "--skip-git-repo-check", "--ephemeral", "-s", "read-only"]  # Luna 6; alternativa: gpt-5.6-luna
     for r in refs:
         cmd += ["-i", str(r)]
     cmd += ["--", "-"]  # el mensaje va por la entrada estándar: sin comillas ni saltos de línea en los argumentos (cmd.exe de Windows los rompe)
@@ -259,9 +264,9 @@ def refine_prompt(c: sprites.Character, target: str, instruction: str, backgroun
             "bordes ni sombras sueltas. Entrega UNA sola imagen final.")
 
 
-def refine(cid: str, current: str, instruction: str, target: str, progress=lambda s: None, key=None, background: str = "#FF00FF") -> str:
+def refine(cid: str, current: str, instruction: str, target: str, progress=lambda s: None, key=None, background: str = "#FF00FF", extra: list = ()) -> str:
     """Una iteración de mejora: manda la versión `current` y la indicación a ChatGPT (Codex) junto con la hoja neutral y la imagen general
-    (si no hay hoja neutral se genera antes); guarda y devuelve la ruta de la nueva versión."""
+    (si no hay hoja neutral se genera antes) y las imágenes `extra` que adjuntó el usuario; guarda y devuelve la ruta de la nueva versión."""
     anatomy.ensure(cid, progress)
     if target != "neutral":
         ensure_neutral(cid, progress, key)
@@ -273,6 +278,9 @@ def refine(cid: str, current: str, instruction: str, target: str, progress=lambd
     if c.source:
         refs.append(c.source)
         labels.append(LABEL_SOURCE)
+    for e in extra:
+        refs.append(e)
+        labels.append("REFERENCIA ADICIONAL que adjuntó el usuario para esta corrección: úsala como guía de lo que pide la indicación.")
     progress("Generando la nueva versión con ChatGPT…")
     data = generate(refine_prompt(c, target, instruction, background), refs, key=key, labels=labels)
     return str(_save_raw(cid, "neutral" if target == "neutral" else target, data))

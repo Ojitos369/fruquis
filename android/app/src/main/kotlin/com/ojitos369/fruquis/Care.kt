@@ -26,6 +26,16 @@ class Care(private val prefs: SharedPreferences) {
         save()
     }
 
+    /** Avanza el tiempo desde el último guardado, releyendo lo guardado (la app y la mascota flotante comparten `care`). */
+    fun tick() {
+        val now = System.currentTimeMillis()
+        KEYS.forEachIndexed { i, k -> stats[i] = prefs.getFloat(k, 80f).toDouble() }
+        advance((now - prefs.getLong("at", now)) / 1000.0, false)
+    }
+
+    /** Índice de la barra más baja si está bajo 25 (como Care.worst en care.py); -1 si todas están bien. */
+    fun worst(): Int = stats.indices.minByOrNull { stats[it] }!!.takeIf { stats[it] < 25 } ?: -1
+
     fun act(a: Action) {
         for (i in 0 until 4) stats[i] = (stats[i] + a.fx[i]).coerceIn(0.0, 100.0)
         save()

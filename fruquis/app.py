@@ -2,8 +2,10 @@
 ventana activa, se deja arrastrar, cuidar (tamagotchi) y conversar."""
 import math
 import random
+import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 import psutil
@@ -13,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMenu, QMessage
 
 from . import chat, sprites, store, theme, winctx
 from .care import ACTIONS, Care
+from .voice import log
 
 SPEED = 100  # px/s sobre un borde
 GRAVITY = 1800
@@ -31,7 +34,8 @@ def clip(text: str, n: int = 220) -> str:
     return cut + "…"
 
 
-BUSY_ANIM = {"thinking": "review", "reading": "reading", "working": "typing", "writing": "typing"}  # fase de la IA → animación
+BUSY_TEXT = {"thinking": "💭 Pensando…", "searching": "🔎 Buscando en internet…","reading": "👀 Mirando…", "working": "⚙️ Trabajando…", "writing": "✍️ Escribiendo…"}
+BUSY_ANIM = {"thinking": "review", "reading": "reading", "searching": "reading", "working": "typing", "writing": "typing"}  # fase de la IA → animación
 
 
 class Bridge(QObject):
@@ -96,9 +100,10 @@ class Bubble(QWidget):
         self.label.setMaximumWidth(280)
         self.label.setStyleSheet("background:transparent;color:#2b2140;padding:8px 12px;font-size:13px")
         self.timer = QTimer(self, singleShot=True, timeout=self.hide)
-        self.above, self.tail_x = True, 20
+        self.above, self.tail_x, self.thought = True, 20, False
 
-    def say(self, text: str, anchor: QRect, ms: int = 6000):
+    def say(self, text: str, anchor: QRect, ms: int = 6000, thought: bool = False):
+        self.thought = thought  # globo de pensamiento: nube con burbujitas en vez de flechita
         self.label.setText(text)
         self.label.adjustSize()
         bw, bh = self.label.width(), self.label.height()
@@ -121,8 +126,20 @@ class Bubble(QWidget):
         top = 0 if self.above else TAIL
         body = QRectF(1.5, top + 1.5, bw - 3, bh - 3)
         path = QPainterPath()
-        path.addRoundedRect(body, 12, 12)
         tx = self.tail_x
+        if self.thought:  # nube redondeada y dos burbujitas que bajan (o suben) hacia la mascota
+            path.addRoundedRect(body, min(bh, 40) / 2, min(bh, 40) / 2)
+            s = 1 if self.above else -1
+            y0 = body.bottom() if self.above else body.top()
+            for dy, r in ((4, 4.0), (9.5, 2.5)):
+                path.addEllipse(QPointF(tx, y0 + s * dy), r, r)
+            p = QPainter(self)
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setBrush(self.FILL)
+            p.setPen(QPen(self.EDGE, 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.drawPath(path)
+            return
+        path.addRoundedRect(body, 12, 12)
         if self.above:
             tri = QPolygonF([QPointF(tx - 9, body.bottom() - 1), QPointF(tx + 9, body.bottom() - 1), QPointF(tx, body.bottom() + TAIL - 2)])
         else:
@@ -153,7 +170,8 @@ class Pet(QWidget):
         self.dir, self.mirror, self.hop, self.last_id = 1, False, None, None
         self.vx, self.samples, self.pamper_until = 0.0, [], 0.0
         self.hop_off = 0.0  # altura (px) del salto real mientras suena la animación «jumping»
-        self.busy_phase, self.followers = None, []  # mientras la IA responde la mascota se queda quieta y muestra lo que hace
+        self.keep_free = store.get("keep_free")  # {"side": derecha|izquierda, "frac": 0.35}: espacio del piso que se le pidió dejar libre
+        self.busy_phase, self.think_on, self.followers = None, False, []  # mientras la IA responde la mascota se queda quieta y muestra lo que hace
         bridge.phase.connect(self.on_phase)
         bridge.reply.connect(self.on_reply)
         self.load_character(char)
@@ -251,9 +269,64 @@ class Pet(QWidget):
     def place(self):
         c = self.center() if self.attached else self.c
         self.c = c
-        self.move(int(c.x() - self.D / 2), int(c.y() - self.D / 2))
+        # setGeometry y no move: al cruzar pantallas con distinta escala (DPI) Qt reescala la ventana y la dejaba recortada
+        self.setGeometry(int(c.x() - self.D / 2), int(c.y() - self.D / 2), self.D, self.D)
+
+    def free_range(self, width: float) -> tuple[float, float]:
+        """Tramo del piso donde puede andar, sin el espacio que se le pidió dejar libre."""
+        f = self.keep_free
+        if not f:
+            return 0.0, width
+        return (0.0, width * (1 - f["frac"])) if f["side"] == "derecha" else (width * f["frac"], width)
+
+    def move_to(self, side: str | None = None, mon=None) -> str:
+        """Orden de voz: se coloca en el piso a la izquierda/derecha/centro (o arriba, en el techo) y/o en otro monitor ('next', 'prev' o número)."""
+        screens = QApplication.screens()
+        ctr = self.center() if self.attached else self.c
+        cur = QApplication.screenAt(QPoint(int(ctr.x()), int(ctr.y()))) or QApplication.primaryScreen()
+        if mon is not None:
+            i = screens.index(cur) if cur in screens else 0
+            j = (i + 1) % len(screens) if mon == "next" else (i - 1) % len(screens) if mon == "prev" else mon
+            if len(screens) < 2 and mon in ("next", "prev"):
+                return "Solo tengo un monitor 😅"
+            if not 0 <= j < len(screens):
+                return f"Solo veo {len(screens)} monitor(es)"
+            cur = screens[j]
+        sc = cur.availableGeometry()
+        keep = (ctr.x() - self.scr.left()) / max(1, self.scr.width())  # sin lado: conserva su posición relativa en el monitor nuevo
+        frac = {"izquierda": 0.06, "derecha": 0.94, "centro": 0.5, "arriba": keep}.get(side, keep)
+        self.win, self.scr, self.screen_t = None, sc, screen_track(sc)
+        if side == "arriba":  # el techo avanza de derecha a izquierda
+            self.attach("screen", 2, sc.width() * (1 - frac), 1)
+        else:
+            lo, hi = self.free_range(sc.width())
+            self.attach("screen", 0, min(max(frac * sc.width(), lo), hi), 1)
+        self.state, self.until = "once", time.monotonic() + 2
+        self.play("waving")
+        n = f" (monitor {screens.index(cur) + 1})" if len(screens) > 1 else ""
+        return {"izquierda": "Me fui a la izquierda ⬅️", "derecha": "Me fui a la derecha ➡️", "centro": "Aquí al centro 🎯", "arriba": "Me subí al techo ⬆️"}.get(side, "Me cambié de monitor 🖥️") + n
+
+    def set_free(self, side: str | None, frac: float = 0.35) -> str:
+        """Orden de voz: deja libre la derecha o la izquierda del piso (no anda ni salta a ventanas ahí). Sin lado, vuelve a andar por donde quiera."""
+        self.keep_free = {"side": side, "frac": frac} if side else None
+        store.put("keep_free", self.keep_free)
+        if not side:
+            return "¡Listo, ando por donde quiera otra vez! 🏃"
+        if self.at == ("screen", 0):
+            lo, hi = self.free_range(self.seg.len)
+            self.s = min(max(self.s, lo), hi)
+        elif self.at[0] != "screen" or self.attached:
+            self.win = None
+            self.fall_from()  # sale de paredes, techo o ventanas: al caer aterriza y el piso ya está acotado
+        return f"Dejo libre la {side}{' (esquina)' if frac < 0.3 else ''} ✋"
 
     def advance_along(self, dt: float):
+        if self.keep_free and self.at == ("screen", 0):
+            lo, hi = self.free_range(self.seg.len)
+            self.s += self.dir * SPEED * dt
+            if not lo <= self.s <= hi:  # llegó al límite del espacio libre: da la vuelta
+                self.s, self.dir = min(max(self.s, lo), hi), -self.dir
+            return
         tr, i = self.track(), self.at[1]
         self.s += self.dir * SPEED * dt
         sg = tr.segs[i]
@@ -299,7 +372,7 @@ class Pet(QWidget):
             self.save_pos()
             if (w := self.care.worst()) and now - self.low_at > 300:
                 self.low_at = now
-                self.say({"hambre": "Tengo hambre… 🍙", "limpieza": "Necesito un baño 🫧", "diversion": "Estoy aburrida 🎾", "energia": "Tengo sueño 💤"}[w[0]])
+                self.say({"hambre": "Tengo hambre… 🍙", "limpieza": "Necesito un baño 🫧", "diversion": "Estoy aburrida 🎾", "energia": "Tengo sueño 💤"}[w[0]] + "  \nHaz clic en mí para cuidarme.")
         st = self.state
         if self.busy_phase and st in ("idle", "walk", "once", "sleep"):  # responde: no se mueve
             self.state = st = "busy"
@@ -363,7 +436,7 @@ class Pet(QWidget):
             ang = (math.degrees(math.atan2(pos.x() - c.x(), -(pos.y() - c.y()))) % 360 + _look_offset()) % 360
             self.anim, self.fi, self.mirror = "look", round(ang / 22.5) % 16, False
         else:
-            self.play("sitting" if sg.kind == "win-top" else "idle")
+            self.play("sitting" if sg.kind == "win-top" else "clinging" if sg.rot != 0 else "idle")
             self.mirror = False
         if now < self.until:
             return
@@ -463,7 +536,7 @@ class Pet(QWidget):
                 self.win = None
             else:
                 self.win = None
-        if c and (self.win is None) and self.attached and self.at[0] == "screen" and self.state in ("idle", "walk", "once") \
+        if c and (self.win is None) and not self.keep_free and self.attached and self.at[0] == "screen" and self.state in ("idle", "walk", "once") \
                 and now - self.hop_at > 8 and (c["id"] != getattr(self, "last_id", None) or kind != self.ctx_kind):
             self.last_id, self.hop_at = c["id"], now
             sc = (QApplication.screenAt(QPoint(c["x"] + c["w"] // 2, c["y"] + 40)) or QApplication.primaryScreen()).availableGeometry()
@@ -533,26 +606,38 @@ class Pet(QWidget):
 
     def menu(self, at: QPoint):
         m = QMenu(self)
-        for label, fn in (("Estado", self.status), ("Ideas", self.ideas), ("Mimar", lambda: self.do("mimar"))):
-            m.addAction(QAction(label, m, triggered=fn))
+        w = self.care.worst()
+        for name, label in (("comer", "🍙 Comer"), ("limpiar", "🫧 Limpiar"), ("jugar", "🎾 Jugar"), ("mimar", "💜 Mimar"), ("dormir", "💤 Dormir")):
+            need = "❗ " if w and ACTIONS[name][0].get(w[0], 0) > 0 else ""  # marca lo que sube la barra más baja
+            m.addAction(QAction(need + label, m, triggered=lambda _=False, n=name: self.do(n)))
         sub = m.addMenu("Animación")
         for name in sorted(self.have):
             if name != sprites.LOOK:
                 sub.addAction(QAction(name, sub, triggered=lambda _=False, n=name: self.preview(n)))
-        for label, fn in (("Chat", self.ui.get("chat")), ("Chat flotante", self.ui.get("float")), ("Cuidar", self.ui.get("care")), ("Personajes…", self.ui.get("chars")),
-                          ("Saludar", self.wave), ("Salir", QApplication.quit)):
+        for label, fn in (("Chat flotante", self.ui.get("float")), ("Cuidar", self.ui.get("care")), ("Personajes…", self.ui.get("chars")),
+                          ("Salir", QApplication.quit)):
             m.addAction(QAction(label, m, triggered=fn or (lambda: None)))
         m.exec(at)
 
     def set_busy(self, phase: str | None = "thinking"):
-        self.busy_phase = phase
+        self.busy_phase, self.think_on = phase, True
+        self.show_thought()
 
     def clear_busy(self):
-        self.busy_phase = None
+        self.busy_phase, self.think_on = None, False
+        if self.bubble.thought:
+            self.bubble.hide()
 
     def on_phase(self, phase: str):
         if self.busy_phase is not None:
             self.busy_phase = phase
+            self.show_thought()
+
+    def show_thought(self):
+        """Globo de pensamiento con lo que hace la IA mientras trabaja (aunque el chat esté cerrado)."""
+        text = BUSY_TEXT.get(self.busy_phase)
+        if text and self.think_on and self.bubble.label.text() != text:
+            self.bubble.say(text, self.geometry(), 300000, thought=True)
 
     def on_reply(self, dest: str, text: str):
         if dest != "chat":  # el chat suspende el estado ocupado cuando termina de escribir la respuesta
@@ -580,6 +665,11 @@ class Pet(QWidget):
     def talk(self, secs: float = 1.5):
         self.state, self.until = "once", time.monotonic() + secs
         self.play("talking")
+
+    def listen(self, secs: float):
+        """Te está escuchando: «listening» si el personaje la tiene; si no, «talking»."""
+        self.state, self.until = "once", time.monotonic() + secs
+        self.play("listening" if "listening" in self.have else "talking")
 
     def do(self, action: str):
         """Acción del tamagotchi: aplica el efecto, anima y habla."""
@@ -617,7 +707,14 @@ class Pet(QWidget):
         opts.setdefault("persona", (self.char.name, self.char.description))
         opts.setdefault("on_phase", self.bridge.phase.emit)
         self.set_busy("thinking")
-        threading.Thread(target=lambda: self.bridge.reply.emit(dest, chat.ask(prompt, track=dest == "chat", **opts)), daemon=True).start()
+        def run():
+            try:
+                out = chat.ask(prompt, track=dest == "chat", **opts)
+            except Exception as e:  # noqa: BLE001 - antes se perdía en silencio (la app no tiene consola) y el chat se quedaba esperando
+                log("error", donde="chat.ask", detalle=traceback.format_exc()[-1200:])
+                out = f"No pude responder ({e})"
+            self.bridge.reply.emit(dest, out)
+        threading.Thread(target=run, daemon=True).start()
 
 
 def _look_offset() -> float:
@@ -626,26 +723,47 @@ def _look_offset() -> float:
 
 
 class FloatButton(QPushButton):
-    """Botón 💬 que se arrastra a cualquier parte; recuerda dónde lo dejaste."""
+    """Botón que se arrastra a cualquier parte; recuerda dónde lo dejaste. Clic principal: abre el chat (modo 💬) o dicta una orden (modo 🎙);
+    clic secundario: cambia entre los dos modos."""
 
-    def __init__(self, on_click):
+    def __init__(self, on_click, on_mic=None, on_mode=None):
         super().__init__("💬")
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setFixedSize(46, 46)
         self.setCursor(Qt.OpenHandCursor)
         self.setStyleSheet("QPushButton{background:#6b4fbb;color:white;border-radius:23px;font-size:20px}QPushButton:hover{background:#8a6ae0}")
-        self.on_click, self.press, self.off = on_click, None, QPoint()
+        self.on_click, self.on_mic, self.on_mode, self.press, self.off, self.moved = on_click, on_mic, on_mode, None, QPoint(), False
+        self.mode = store.get("button_mode", "chat") if on_mic else "chat"
+        self.listening = False
+        self.refresh()
         saved = store.get("button")
         scr = QApplication.primaryScreen().availableGeometry()
         self.move(*(saved if saved else (scr.right() - 62, scr.bottom() - 62)))
         self.clamp()
+
+    def refresh(self):
+        self.setText("🔴" if self.listening else "🎙" if self.mode == "mic" else "💬")
+        self.setToolTip("Clic: dictar una orden · clic derecho: volver al chat" if self.mode == "mic" else "Clic: abrir el chat · clic derecho: cambiar a micrófono")
+
+    def set_listening(self, on: bool):
+        self.listening = on
+        self.refresh()
 
     def clamp(self):
         scr = (QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()).availableGeometry()
         self.move(max(scr.left(), min(self.x(), scr.right() - self.width())), max(scr.top(), min(self.y(), scr.bottom() - self.height())))
 
     def mousePressEvent(self, e):
+        if e.button() == Qt.RightButton:  # clic secundario: chat ↔ micrófono
+            self.press = None
+            if self.on_mic:
+                self.mode = "mic" if self.mode == "chat" else "chat"
+                store.put("button_mode", self.mode)
+                self.refresh()
+                if self.on_mode:
+                    self.on_mode(self.mode)
+            return
         self.press, self.off, self.moved = e.globalPosition().toPoint(), e.position().toPoint(), False
 
     def mouseMoveEvent(self, e):
@@ -658,14 +776,18 @@ class FloatButton(QPushButton):
             self.move(g - self.off)
 
     def mouseDoubleClickEvent(self, e):
-        if f := self.ui.get("float"):
+        if f := getattr(self, "ui", {}).get("float"):
             self.press = None
             f()
 
     def mouseReleaseEvent(self, e):
+        if self.press is None:  # soltó el clic secundario
+            return
         if self.moved:
             self.clamp()
             store.put("button", [self.x(), self.y()])
+        elif self.mode == "mic":
+            self.on_mic()
         else:
             self.on_click()
         self.press = None
@@ -674,9 +796,14 @@ class FloatButton(QPushButton):
 def run(scale: float | None = None):
     from .chatui import ChatView
     from .shell import MainWindow
+    from .voice import AWAKE_S, Voice
     from .ui import CareView, CatalogView, CharactersView, NewCharView, AllPromptView, GenBatchView, NeutralPromptView, ProfileView, RefineView, PromptView, SettingsView, RefsView, ReviewView
 
     app = QApplication([])
+    # sin consola (pythonw) los errores desaparecían: se guardan en ~/.fruquis/voice.log
+    sys.excepthook = lambda t, v, tb: (log("error", donde="excepción", detalle="".join(traceback.format_exception(t, v, tb))[-1200:]), sys.__excepthook__(t, v, tb))
+    threading.excepthook = lambda a: log("error", donde=f"hilo {a.thread.name if a.thread else '?'}",
+                                         detalle="".join(traceback.format_exception(a.exc_type, a.exc_value, a.exc_traceback))[-1200:])
     theme.apply(app)
     app.setQuitOnLastWindowClosed(False)
     bridge = Bridge()
@@ -690,6 +817,7 @@ def run(scale: float | None = None):
             QMessageBox.warning(None, "Fruquis", str(e))
             return
     pet = Pet(sprites.get(store.get("active", "")), scale or store.get("scale", 0.6), bridge)
+    voice = pet.voice = Voice(lambda: pet.char.name, lambda: [c.name for c in sprites.list_all().values()], lambda: pet.busy_phase is not None)  # antes que las vistas: Ajustes lista los micrófonos
     shell = MainWindow(pet)
     for name, view in (("chat", ChatView(shell, bridge)), ("care", CareView(shell)), ("chars", CharactersView(shell)), ("catalog", CatalogView(shell)),
                        ("prompt", PromptView(shell)), ("review", ReviewView(shell)), ("newchar", NewCharView(shell)), ("refs", RefsView(shell)), ("allprompt", AllPromptView(shell)), ("neutralprompt", NeutralPromptView(shell)), ("settings", SettingsView(shell)), ("genbatch", GenBatchView(shell)), ("refine", RefineView(shell)), ("profile", ProfileView(shell))):
@@ -710,7 +838,27 @@ def run(scale: float | None = None):
             pet.say(f"No pude generar «{j.anim}»", 5000)
     shell.gen.finished.connect(on_job)
     shell.gen.all_done.connect(lambda ok, bad: pet.say(f"¡Terminé! {ok} lista(s)" + (f", {bad} con error" if bad else "") + " ✨", 7000))
-    btn = FloatButton(toggle_chat)
+    voice.woke.connect(lambda: (pet.say("🎙 Escuchando…", AWAKE_S * 1000), pet.listen(AWAKE_S)))
+    voice.status.connect(lambda m: pet.say(m, 6000))
+    voice.progress.connect(lambda p: p % 10 == 0 and pet.say(f"Descargando el modelo de voz… {p}%", 4000))
+    voice.problem.connect(lambda m: (pet.say(m, 9000), store.put("voice", False)))
+
+    def on_heard(text):  # la orden dictada entra al chat como si la hubieras escrito, sin abrirlo: responde con globos
+        shell.views["chat"].send(text, "voz")
+    voice.heard.connect(on_heard)
+    voice.unsure.connect(lambda t: pet.say(f"No te entendí bien: «{t}». ¿Lo repites?", 6000))
+
+    def on_stop():  # «detener»: corta la petición en curso (la respuesta que se está escribiendo se muestra completa)
+        chat_view = shell.views["chat"]
+        if chat_view.busy():
+            chat_view.stop()
+            pet.say("Detenido ✋", 3000)
+    voice.stop.connect(on_stop)
+    voice.enable(bool(store.get("voice", False)))
+    chat_view = shell.views["chat"]
+    btn = FloatButton(toggle_chat, chat_view.toggle_mic,
+                      lambda m: pet.say("Ahora un clic me dicta una orden 🎙 (clic derecho: volver al chat)" if m == "mic" else "Ahora un clic abre el chat 💬", 4000))
+    voice.listening.connect(btn.set_listening)
     pet.ui = {"chat": lambda: shell.open("chat"), "float": shell.toggle_float, "care": lambda: shell.open("care"), "chars": lambda: shell.open("chars")}
     pet.followers.append(shell.follow_float)
     app.aboutToQuit.connect(pet.care.save)

@@ -86,8 +86,8 @@ class Sprite {
     companion object {
         // animación de respaldo si el personaje no la trae (igual que sprites.WANTED)
         val FALLBACK = mapOf(
-            "eating" to "waving", "cleaning" to "waving", "pampered" to "waving", "talking" to "waving", "playing" to "jumping",
-            "sleeping" to "waiting", "sitting" to "idle", "dragged" to "waiting", "falling" to "jumping", "climbing" to "running-right",
+            "eating" to "waving", "cleaning" to "waving", "pampered" to "waving", "talking" to "waving", "listening" to "talking","playing" to "jumping",
+            "sleeping" to "waiting", "sitting" to "idle", "dragged" to "waiting", "falling" to "jumping", "climbing" to "running-right", "clinging" to "idle",
             "waving" to "idle", "jumping" to "idle", "waiting" to "idle",
         )
     }

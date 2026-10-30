@@ -43,7 +43,8 @@ def analyze(cid: str, model: str | None = None) -> dict:
             'ice-crystal star») y su forma natural de moverse (máximo 60 palabras).\n'
             '- "actions": un objeto con una entrada por CADA animación de la lista, con la descripción del movimiento reescrita para ESTA anatomía '
             "(máximo 35 palabras cada una): usa solo las partes que tiene; si la acción base pide algo que no tiene (piernas, manos), sustitúyelo por lo "
-            "equivalente en su cuerpo; conserva el espíritu de la acción.\n\nAnimaciones y descripción base:\n" + base)
+            "equivalente en su cuerpo; conserva el espíritu de la acción. Si la acción usa un objeto (teclado, comida, libro, juguete, almohada…), nómbralo y di cómo lo usa ESTA criatura "
+            "según su cuerpo y dieta (p. ej. come pescado y no fruta; teclea con la cola; sostiene el libro con tentáculos).\n\nAnimaciones y descripción base:\n" + base)
         out = provider.vision(prompt, [cp], model, timeout=240)
     m = re.search(r"\{.*\}", out or "", re.S)
     try:

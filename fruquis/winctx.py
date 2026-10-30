@@ -162,6 +162,46 @@ def list_windows() -> list:
     return out
 
 
+def grab(fragment: str):
+    """(título, imagen PIL) de la primera ventana cuyo título contenga `fragment`, SIN enfocarla (aunque esté tapada por otras). None si no existe o no se pudo.
+    Windows: PrintWindow; X11: `import` de ImageMagick. macOS no está soportado (screencapture -l necesita el id de ventana de Quartz)."""
+    from PIL import Image
+    hit = next((w for w in list_windows() if fragment.lower() in w["title"].lower()), None)
+    if not hit or hit["w"] <= 0 or hit["h"] <= 0:
+        return None
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        u, g = ctypes.windll.user32, ctypes.windll.gdi32
+        w, h, hwnd = hit["w"], hit["h"], int(hit["id"])
+        if u.IsIconic(hwnd):  # minimizada: no tiene contenido que pintar
+            return None
+
+        class BIH(ctypes.Structure):
+            _fields_ = [("size", wintypes.DWORD), ("w", wintypes.LONG), ("h", wintypes.LONG), ("planes", wintypes.WORD), ("bpp", wintypes.WORD),
+                        ("comp", wintypes.DWORD), ("sz", wintypes.DWORD), ("xp", wintypes.LONG), ("yp", wintypes.LONG), ("a", wintypes.DWORD), ("b", wintypes.DWORD)]
+        g.CreateCompatibleDC.restype = g.CreateCompatibleBitmap.restype = g.SelectObject.restype = ctypes.c_void_p
+        u.GetWindowDC.restype = ctypes.c_void_p
+        hdc = u.GetWindowDC(hwnd)
+        mdc = g.CreateCompatibleDC(ctypes.c_void_p(hdc))
+        bmp = g.CreateCompatibleBitmap(ctypes.c_void_p(hdc), w, h)
+        g.SelectObject(ctypes.c_void_p(mdc), ctypes.c_void_p(bmp))
+        ok = u.PrintWindow(hwnd, ctypes.c_void_p(mdc), 2)  # 2 = PW_RENDERFULLCONTENT: también navegadores y apps aceleradas
+        buf = ctypes.create_string_buffer(w * h * 4)
+        bi = BIH(ctypes.sizeof(BIH), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)  # alto negativo: filas de arriba abajo
+        g.GetDIBits(ctypes.c_void_p(mdc), ctypes.c_void_p(bmp), 0, h, buf, ctypes.byref(bi), 0)
+        g.DeleteObject(ctypes.c_void_p(bmp))
+        g.DeleteDC(ctypes.c_void_p(mdc))
+        u.ReleaseDC(hwnd, ctypes.c_void_p(hdc))
+        return (hit["title"], Image.frombuffer("RGBA", (w, h), buf, "raw", "BGRA", 0, 1).convert("RGB")) if ok else None
+    if sys.platform == "darwin":
+        return None
+    import io
+    png = subprocess.run(["import", "-window", hit["id"], "png:-"], capture_output=True, timeout=10).stdout
+    return (hit["title"], Image.open(io.BytesIO(png))) if png else None
+
+
 def focus(fragment: str) -> str | None:
     """Enfoca la primera ventana cuyo título contenga `fragment`; devuelve su título o None."""
     hit = next((w for w in list_windows() if fragment.lower() in w["title"].lower()), None)

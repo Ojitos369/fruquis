@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from PySide6.QtCore import QObject, Signal
 
-from . import anatomy, imagegen, sprites, store
+from . import anatomy, imagegen, provider, sprites, store
 
 QUEUED, RUNNING, READY, FAILED, CANCELLED, APPLIED = "en cola", "generando", "lista", "error", "cancelada", "aplicada"
 _ids = itertools.count(1)
@@ -75,8 +75,9 @@ class GenManager(QObject):
                 imagegen.make_neutral(cid, key=("neutral", cid))
             except SystemExit as e:
                 for j in jobs:
-                    self.set(j, status=FAILED, error=str(e))
-                    self.finished.emit(j)
+                    if j.status != CANCELLED:
+                        self.set(j, status=FAILED, error=str(e))
+                        self.finished.emit(j)
                 return self.check_done()
         for j in jobs:
             if j.status == QUEUED:
@@ -116,6 +117,9 @@ class GenManager(QObject):
         elif job.status == RUNNING:
             self.set(job, status=CANCELLED, msg="")
             imagegen.cancel(job.id)
+        if not any(j.cid == job.cid and j.status in (QUEUED, RUNNING) for j in self.jobs):  # nada más pendiente: se aborta también la preparación
+            imagegen.cancel(("neutral", job.cid))  # (hoja neutral y análisis del personaje que corren antes de repartir el trabajo)
+            provider.cancel()
         self.check_done()
 
     def cancel_all(self):

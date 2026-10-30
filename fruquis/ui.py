@@ -1,4 +1,5 @@
 """Vistas de la ventana única: cuidar, personajes, catálogo de animaciones, prompt, revisión de hoja y nuevo personaje."""
+import shutil
 import threading
 from pathlib import Path
 
@@ -7,9 +8,10 @@ from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider, QSpinBox, QVBoxLayout, QWidget)
 
-from . import binaries, sprites, store
+from . import binaries, provider, sprites, store
+from .voice import MODELS
 from .care import ACTIONS
-from .chatui import avatar
+from .chatui import avatar, copy_text, pick_images
 
 LABELS = {"hambre": "Hambre", "limpieza": "Limpieza", "diversion": "Diversión", "energia": "Energía"}
 
@@ -41,6 +43,11 @@ class Bg(QObject):
             except Exception as e:  # noqa: BLE001 - se muestra al usuario
                 self.done.emit(i, None, f"{type(e).__name__}: {e}")
         threading.Thread(target=go, daemon=True).start()
+
+    def cancel(self):
+        """Descarta los resultados pendientes y aborta los análisis con IA en curso."""
+        self.cbs.clear()
+        provider.cancel()
 
 
 class View(QWidget):
@@ -166,14 +173,19 @@ class CharactersView(View):
         grid.setSpacing(8)
         for i, (lab, fn) in enumerate((("Catálogo de animaciones", self.catalog), ("Agregar hoja de sprites", self.add),
                                        ("Imagen general y hoja neutral", self.refs), ("Prompt / generar animación", self.prompt),
-                                       ("Exportar (.zip)", self.export))):
+                                       ("Exportar (.zip)", self.export), ("Editar nombre y detalles", self.edit))):
             grid.addWidget(button(lab, fn), i // 2, i % 2)
         right.addLayout(grid)
+        self.del_btn = button("Eliminar personaje", self.remove, "danger")
+        right.addWidget(self.del_btn)
         right.addWidget(QLabel("ANIMACIONES", objectName="section"))
         self.rep = QPlainTextEdit(readOnly=True)
         right.addWidget(self.rep, 1)
         self.status = QLabel(objectName="hint")
         right.addWidget(self.status)
+        self.stop_btn = button("Cancelar análisis", self.stop_analysis, "danger")
+        self.stop_btn.hide()
+        right.addWidget(self.stop_btn)
         main.addLayout(right, 1)
         self.list.currentRowChanged.connect(self.show_one)
 
@@ -207,6 +219,8 @@ class CharactersView(View):
         active = c.id == self.pet.char.id
         self.use_btn.setText("Personaje activo ✓" if active else "Usar este personaje")
         self.use_btn.setEnabled(not active)
+        self.del_btn.setEnabled(not (sprites.BUNDLED / c.id).is_dir())  # los incluidos con la app no se borran
+        self.del_btn.setText("Eliminar personaje")
         self.rep.setPlainText("\n".join(sprites.report(c)))
 
     def use(self):
@@ -215,6 +229,26 @@ class CharactersView(View):
             self.pet.say(f"¡Ahora soy {c.name}!")
             self.reload(c.id)
             self.shell.toast(f"Ahora es {c.name}")
+
+    def remove(self):
+        c = self.cur()
+        if not c:
+            return
+        if self.del_btn.text() == "Eliminar personaje":  # confirmación en dos pasos, como en el catálogo
+            self.del_btn.setText("¿Seguro? Pulsa otra vez")
+            return
+        if len(self.chars) < 2:
+            return self.shell.toast("Debe quedar al menos un personaje.", 4000)
+        if c.id == self.pet.char.id:  # la mascota pasa a otro personaje antes de borrar el activo
+            other = next(o for o in self.chars.values() if o.id != c.id)
+            self.pet.load_character(other, remember=True)
+        try:
+            sprites.delete(c.id)
+        except (SystemExit, OSError) as e:
+            return self.shell.toast(str(e), 5000)
+        self.shell.toast(f"Eliminado: {c.name}")
+        self.sel = None
+        self.reload()
 
     def catalog(self):
         if c := self.cur():
@@ -228,6 +262,10 @@ class CharactersView(View):
         if c := self.cur():
             self.shell.push("refs", cid=c.id)
 
+    def edit(self):
+        if c := self.cur():
+            self.shell.push("profile", cid=c.id)
+
     def add(self):
         """Hoja de cualquier tamaño: se detectan los cuadros y la IA propone qué animaciones son; luego la revisas."""
         c = self.cur()
@@ -235,10 +273,16 @@ class CharactersView(View):
         if not c or not path:
             return
         self.status.setText("Analizando la hoja con la IA…")
+        self.stop_btn.show()
         self.bg.run(lambda: sprites.plan(c.id, path, ai=True), lambda plan, err: self.planned(c, plan, err))
+
+    def stop_analysis(self):
+        self.bg.cancel()
+        self.planned(None, None, "Análisis cancelado.")
 
     def planned(self, c, plan, err):
         self.status.setText("")
+        self.stop_btn.hide()
         if err:
             return self.shell.toast(err, 5000)
         self.shell.push("review", cid=c.id, plan=plan)
@@ -608,7 +652,7 @@ class PromptView(View):
         self.shell.push("review", cid=cid, plan=plan)
 
     def copy(self):
-        QApplication.clipboard().setText(self.text.toPlainText())
+        copy_text(self.text.toPlainText())
         self.pet.say("¡Prompt copiado! ✓", 3000)
         self.shell.back()
         self.shell.toast("Prompt copiado ✓")
@@ -757,11 +801,11 @@ class RefsView(View):
         self.neu_pic, self.neu_info = QLabel(alignment=Qt.AlignCenter), QLabel(objectName="dim")
         cards.addLayout(self.card("IMAGEN GENERAL", self.src_pic, self.src_info,
                                   (("Cargar imagen…", self.load_src, None), ("Identidad y anatomía", self.profile, None),
-                                   ("Quitar", self.clear_src, "danger"))), 1)
+                                   ("Guardar…", lambda: self.save_ref("source"), "ghost"), ("Quitar", self.clear_src, "danger"))), 1)
         self.gen_btn = button("✨  Generar con ChatGPT", self.gen_neutral, "primary")
         self.improve_btn = button("Mejorar con chat", self.improve_neutral)
         self.neu_btns = (self.gen_btn, self.improve_btn, button("Prompt", self.neutral_prompt, "ghost"), button("Cargar propia…", self.load_neutral, "ghost"),
-                         button("Quitar", self.clear_neutral, "danger"))
+                         button("Guardar…", lambda: self.save_ref("neutral"), "ghost"), button("Quitar", self.clear_neutral, "danger"))
         cards.addLayout(self.card("HOJA NEUTRAL · 4 VISTAS", self.neu_pic, self.neu_info, None, self.neu_btns), 2)
         lay.addLayout(cards, 1)
         self.cancel_btn = button("Cancelar generación", self.cancel, "danger")
@@ -831,6 +875,17 @@ class RefsView(View):
             return self.shell.toast(str(e), 5000)
         self.refresh()
         self.shell.toast("Imagen general guardada")
+
+    def save_ref(self, which):
+        """Copia la imagen general o la hoja neutral (cargada o generada) a donde elija el usuario."""
+        f = getattr(self.char(), which)
+        if not f:
+            return self.shell.toast("Aún no hay imagen que guardar")
+        f = Path(f)
+        path, _ = QFileDialog.getSaveFileName(self, "Guardar imagen", str(Path.home() / f"{self.cid}-{which}{f.suffix}"), "Imágenes (*.png *.webp *.jpg *.jpeg)")
+        if path:
+            shutil.copyfile(f, path)
+            self.shell.toast("Imagen guardada")
 
     def profile(self):
         self.shell.push("profile", cid=self.cid)
@@ -954,7 +1009,7 @@ class AllPromptView(View):
         n = len(self.names())
         if not n:
             return self.shell.toast("Marca al menos una animación")
-        QApplication.clipboard().setText(self.text.toPlainText())
+        copy_text(self.text.toPlainText())
         self.pet.say("¡Prompt general copiado! ✓", 3000)
         self.shell.back()
         self.shell.toast(f"Prompt general copiado ✓ ({n} animaciones)")
@@ -1006,7 +1061,7 @@ class NeutralPromptView(View):
         self.shell.toast(f"Imagen de referencia: {p}" if p else "Aún no hay imagen general: cárgala en la vista anterior", 5000)
 
     def copy(self):
-        QApplication.clipboard().setText(self.text.toPlainText())
+        copy_text(self.text.toPlainText())
         self.pet.say("¡Prompt de la hoja neutral copiado! ✓", 3000)
         self.shell.back()
         self.shell.toast("Prompt de la hoja neutral copiado ✓")
@@ -1100,6 +1155,51 @@ class SettingsView(View):
             row.addWidget(w)
         lay.addLayout(row)
         lay.addWidget(self.term)
+        lay.addSpacing(10)
+        lay.addWidget(QLabel("VOZ", objectName="section"))
+        self.voice = QCheckBox("Escuchar su nombre: al oírlo, dicta tu pedido por voz y trabaja como asistente (reconocimiento local; baja el modelo la primera vez)")
+        self.voice.setChecked(bool(store.get("voice", False)))
+        self.voice.toggled.connect(self.set_voice)
+        lay.addWidget(self.voice)
+        self.vstate, self.vbar = QLabel(objectName="dim"), QProgressBar(textVisible=False)
+        self.vbar.setRange(0, 100)
+        self.vbar.setFixedHeight(6)
+        self.vbar.hide()
+        self.voice_state()
+        v = self.pet.voice
+        v.progress.connect(self.voice_progress)
+        v.ready.connect(self.voice_state)
+        v.problem.connect(lambda _: (self.voice_state(), self.voice.setChecked(False)))
+        lay.addWidget(self.vstate)
+        lay.addWidget(self.vbar)
+        self.vlevel, self.vheard = QProgressBar(textVisible=False), QLabel("Oí: —", objectName="dim")  # prueba en vivo del micrófono
+        self.vlevel.setRange(0, 100)
+        self.vlevel.setFixedHeight(6)
+        self.vlevel.setToolTip("Volumen del micrófono: debe moverse cuando hablas")
+        self.vheard.setWordWrap(True)
+        v.level.connect(self.vlevel.setValue)
+        v.raw.connect(lambda t: self.vheard.setText(f"Oí: {t}"))
+        lay.addWidget(self.vlevel)
+        lay.addWidget(self.vheard)
+        row = QHBoxLayout()
+        self.vq = QComboBox()
+        for label, key in (("Precisa · small (~480 MB, recomendada)", "small"), ("Rápida · base (~145 MB)", "base")):
+            self.vq.addItem(label, key)
+        self.vq.setCurrentIndex(max(0, self.vq.findData(v.size)))
+        self.vq.currentIndexChanged.connect(lambda _: (v.set_size(self.vq.currentData()), self.voice_state()))
+        row.addWidget(QLabel("Calidad"))
+        row.addWidget(self.vq, 1)
+        lay.addLayout(row)
+        row = QHBoxLayout()
+        self.mic = QComboBox()
+        self.mic.addItem("Predeterminado del sistema", "")
+        for m in self.pet.voice.mics():
+            self.mic.addItem(m, m)
+        self.mic.setCurrentIndex(max(0, self.mic.findData(store.get("voice_mic", ""))))
+        self.mic.currentIndexChanged.connect(lambda _: self.pet.voice.set_mic(self.mic.currentData()))
+        row.addWidget(QLabel("Micrófono"))
+        row.addWidget(self.mic, 1)
+        lay.addLayout(row)
         lay.addSpacing(10)
         lay.addWidget(QLabel("ESCRITORIO", objectName="section"))
         self.see = QCheckBox("Ver la ventana activa en el chat (toma una captura antes de responder)")
@@ -1265,8 +1365,24 @@ class SettingsView(View):
         store.put("scale", scale)
         self.pet.set_scale(scale)
 
+    def voice_state(self):
+        self.vbar.hide()
+        v = self.pet.voice
+        self.vstate.setText("✓ Modelo de voz disponible" if v.have() else f"⬇ Falta descargar el modelo de voz (~{MODELS[v.size] // 1_000_000} MB): se baja al activarlo")
+
+    def voice_progress(self, p: int):
+        self.vbar.setVisible(p < 100)
+        self.vbar.setValue(p)
+        self.vstate.setText(f"Descargando el modelo de voz… {p}%" if p < 100 else "Instalando el modelo…")
+
+    def set_voice(self, on: bool):
+        store.put("voice", on)
+        self.pet.voice.enable(on)
+        if on:
+            self.pet.say("Descargando el modelo de voz la primera vez… luego di mi nombre", 7000)
+
     def save_chat(self, *_):
-        store.put("chat_opts", {"model": self.model.currentText(), "effort": self.effort.currentText(), "tools": self.term.isChecked(),
+        store.put("chat_opts", {**store.get("chat_opts", {}), "model": self.model.currentText(), "effort": self.effort.currentText(), "tools": self.term.isChecked(),
                                 "see": self.see.isChecked(), "control": self.ctl.isChecked()})
 
     def reset(self):
@@ -1302,7 +1418,9 @@ class GenBatchView(View):
         self.list.setStyleSheet("QListWidget::item{padding:4px 10px;margin:1px 4px}")
         top.addWidget(self.list, 3)
         side = QVBoxLayout()
-        side.addWidget(button("Marcar faltantes", self.mark_missing, "ghost"))
+        side.addWidget(button("Marcar todas", lambda: self.mark("all"), "ghost"))
+        side.addWidget(button("Marcar faltantes", lambda: self.mark("missing"), "ghost"))
+        side.addWidget(button("Marcar existentes", lambda: self.mark("existing"), "ghost"))
         side.addWidget(button("Quitar todas", lambda: self.mark(None), "ghost"))
         side.addStretch(1)
         self.go = button("✨  Generar seleccionadas", self.start, "primary")
@@ -1316,7 +1434,7 @@ class GenBatchView(View):
         lay.addWidget(self.queue, 1)
         row = QHBoxLayout()
         self.btns = {k: button(lab, fn, nm) for k, lab, fn, nm in (("review", "Revisar", self.review, None), ("apply", "Aplicar", self.apply_one, None),
-                     ("cancel", "Cancelar", self.cancel_one, "danger"), ("apply_all", "Aplicar todas las listas", self.apply_all, "primary"),
+                     ("cancel", "Cancelar", self.cancel_one, "danger"), ("cancel_all", "Cancelar todas", self.cancel_all, "danger"), ("apply_all", "Aplicar todas las listas", self.apply_all, "primary"),
                      ("clear", "Limpiar terminadas", lambda: shell.gen.clear_finished(), "ghost"))}
         for b in self.btns.values():
             row.addWidget(b)
@@ -1344,13 +1462,12 @@ class GenBatchView(View):
         self.redraw()
 
     def mark(self, only):
-        for i in range(self.list.count()):
-            self.list.item(i).setCheckState(Qt.Unchecked)
-
-    def mark_missing(self):
+        """only: None = quitar todas, "all" = todas, "missing" = faltantes, "existing" = existentes."""
         c = sprites.get(self.cid)
         for i in range(self.list.count()):
-            self.list.item(i).setCheckState(Qt.Unchecked if self.list.item(i).data(Qt.UserRole) in c.anims else Qt.Checked)
+            have = self.list.item(i).data(Qt.UserRole) in c.anims
+            on = only == "all" or (only == "missing" and not have) or (only == "existing" and have)
+            self.list.item(i).setCheckState(Qt.Checked if on else Qt.Unchecked)
 
     def start(self):
         from . import imagegen
@@ -1392,6 +1509,7 @@ class GenBatchView(View):
         self.btns["review"].setEnabled(bool(j and j.status == "lista"))
         self.btns["apply"].setEnabled(bool(j and j.status == "lista"))
         self.btns["cancel"].setEnabled(bool(j and j.status in ("en cola", "generando")))
+        self.btns["cancel_all"].setEnabled(any(x.status in ("en cola", "generando") for x in self.mine()))
         n = sum(x.status == "lista" for x in self.mine())
         self.btns["apply_all"].setEnabled(n > 0)
         self.btns["apply_all"].setText(f"Aplicar todas las listas ({n})" if n else "Aplicar todas las listas")
@@ -1414,6 +1532,10 @@ class GenBatchView(View):
 
     def cancel_one(self):
         if j := self.cur():
+            self.shell.gen.cancel(j)
+
+    def cancel_all(self):
+        for j in self.mine():
             self.shell.gen.cancel(j)
 
 
@@ -1453,10 +1575,13 @@ class RefineView(View):
         self.input = QLineEdit()
         self.input.setPlaceholderText("¿Qué hay que corregir? Se aplica sobre la versión seleccionada")
         self.input.returnPressed.connect(self.send)
+        self.refs = []
+        self.clip_btn = button("📎", self.attach, "ghost")
+        self.clip_btn.setToolTip("Adjuntar imágenes de referencia (clic otra vez para quitarlas)")
         self.send_btn = button("✨  Enviar", self.send, "primary")
         self.cancel_btn = button("Cancelar", self.cancel, "danger")
         self.cancel_btn.hide()
-        for w in (self.input, self.send_btn, self.cancel_btn):
+        for w in (self.input, self.clip_btn, self.send_btn, self.cancel_btn):
             send.addWidget(w)
         lay.addLayout(send)
         self.status = QLabel(objectName="hint")
@@ -1502,12 +1627,21 @@ class RefineView(View):
             pm = QPixmap(self.versions[i]["path"])
             self.shot.setPixmap(pm.scaled(740, 230, Qt.KeepAspectRatio, Qt.SmoothTransformation) if not pm.isNull() else QPixmap())
 
+    def attach(self):
+        """Si ya hay imágenes adjuntas, el clic las quita; si no, abre el selector."""
+        self.refs = [] if self.refs else pick_images(self)
+        self.clip_btn.setText(f"📎 {len(self.refs)}" if self.refs else "📎")
+
     def send(self):
         from . import imagegen
         text = self.input.text().strip()
         if not text or self.busy or not self.versions:
             return
         base = self.versions[self.combo.currentIndex()]["path"]
+        extra, self.refs = self.refs, []
+        self.clip_btn.setText("📎")
+        if extra:
+            text += f"  (+{len(extra)} imagen(es) de referencia)"
         self.busy = True
         self.input.clear()
         self.send_btn.setEnabled(False)
@@ -1516,7 +1650,7 @@ class RefineView(View):
         self.status.setText("Preparando…")
         self.pet.set_busy("working")
         cid, target, bg = self.cid, self.target, store.get("prompt_bg", "#FF00FF")
-        self.job.run(lambda: imagegen.refine(cid, base, text, target, self.job.msg.emit, key=("refine", id(self)), background=bg),
+        self.job.run(lambda: imagegen.refine(cid, base, text, target, self.job.msg.emit, key=("refine", id(self)), background=bg, extra=extra),
                      lambda path, err: self.done(path, err, text))
 
     def done(self, path, err, text):
@@ -1565,6 +1699,13 @@ class ProfileView(View):
                       "Puedes corregir los textos a mano.", objectName="dim")
         hint.setWordWrap(True)
         lay.addWidget(hint)
+        self.cname, self.cdesc = QLineEdit(), QPlainTextEdit()
+        self.cname.setPlaceholderText("Nombre del personaje")
+        self.cdesc.setPlaceholderText("Descripción breve")
+        self.cdesc.setFixedHeight(60)
+        for lab, w in (("NOMBRE", self.cname), ("DESCRIPCIÓN", self.cdesc)):
+            lay.addWidget(QLabel(lab, objectName="section"))
+            lay.addWidget(w)
         self.identity, self.anatomy, self.actions = QPlainTextEdit(), QPlainTextEdit(), QPlainTextEdit()
         self.identity.setPlaceholderText("Descripción visual precisa: tipo de criatura, colores, rasgos, accesorios, proporciones…")
         self.anatomy.setPlaceholderText("Partes del cuerpo que sí tiene y las que no; cómo se mueve de forma natural…")
@@ -1576,6 +1717,9 @@ class ProfileView(View):
         row = QHBoxLayout()
         self.ai_btn = button("✨  Analizar con IA", self.analyze, "primary")
         row.addWidget(self.ai_btn)
+        self.stop_btn = button("Cancelar análisis", self.stop_analysis, "danger")
+        self.stop_btn.hide()
+        row.addWidget(self.stop_btn)
         row.addWidget(button("Guardar", self.save))
         row.addStretch(1)
         lay.addLayout(row)
@@ -1583,8 +1727,9 @@ class ProfileView(View):
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
         self.save_t = QTimer(self, singleShot=True, interval=900, timeout=self.save)
-        for w in (self.identity, self.anatomy, self.actions):
+        for w in (self.identity, self.anatomy, self.actions, self.cdesc):
             w.textChanged.connect(lambda: None if self.loading else self.save_t.start())
+        self.cname.textChanged.connect(lambda: None if self.loading else self.save_t.start())
 
     def enter(self, cid="", **kw):
         self.cid = cid or self.cid
@@ -1594,6 +1739,8 @@ class ProfileView(View):
     def load(self):
         c = sprites.get(self.cid)
         self.loading = True
+        self.cname.setText(c.name)
+        self.cdesc.setPlainText(c.description)
         self.identity.setPlainText(c.identity)
         self.anatomy.setPlainText(c.anatomy)
         self.actions.setPlainText("\n".join(f"{k}: {v}" for k, v in c.actions.items()))
@@ -1606,19 +1753,28 @@ class ProfileView(View):
             k, _, v = ln.partition(":")
             if k.strip() in sprites.WANTED and v.strip():
                 actions[k.strip()] = v.strip()
-        sprites.set_profile(self.cid, self.identity.toPlainText().strip(), self.anatomy.toPlainText().strip(), actions)
+        sprites.set_profile(self.cid, self.identity.toPlainText().strip(), self.anatomy.toPlainText().strip(), actions,
+                            self.cname.text().strip(), self.cdesc.toPlainText().strip())
+        if self.cid == self.pet.char.id:
+            self.pet.char = sprites.get(self.cid)  # la mascota activa usa el nombre/descripción nuevos
         self.status.setText("Guardado ✓")
 
     def analyze(self):
         from . import anatomy
         cid = self.cid
         self.ai_btn.setEnabled(False)
+        self.stop_btn.show()
         self.status.setText("Analizando las imágenes del personaje con la IA…")
         self.pet.set_busy("reading")
         self.job.run(lambda: anatomy.analyze(cid), self.analyzed)
 
+    def stop_analysis(self):
+        self.job.cancel()
+        self.analyzed(None, "Análisis cancelado.")
+
     def analyzed(self, r, err):
         self.ai_btn.setEnabled(True)
+        self.stop_btn.hide()
         self.pet.clear_busy()
         if err:
             self.status.setText("")

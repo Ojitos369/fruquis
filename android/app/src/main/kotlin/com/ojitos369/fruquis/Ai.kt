@@ -50,20 +50,23 @@ class Ai(val p: SharedPreferences) {
 
     private fun obj(vararg kv: Pair<String, Any>) = JSONObject().also { o -> kv.forEach { o.put(it.first, it.second) } }
 
-    /** Respuesta de texto del chat; `png` (opcional) = imagen para visión. */
-    fun chat(prompt: String, system: String, png: ByteArray? = null): String {
-        val img = png?.let { Base64.encodeToString(it, Base64.NO_WRAP) }
+    /** Respuesta de texto del chat; `jpegs` (opcional) = imágenes de referencia para visión. */
+    fun chat(prompt: String, baseSystem: String, jpegs: List<ByteArray> = emptyList()): String {
+        val system = baseSystem + Place.hint()
+        val imgs = jpegs.map { Base64.encodeToString(it, Base64.NO_WRAP) }
         val text = obj("type" to "text", "text" to prompt)
         if (anthropic("chat")) {
             val parts = JSONArray()
-            if (img != null) parts.put(obj("type" to "image", "source" to obj("type" to "base64", "media_type" to "image/png", "data" to img)))
+            imgs.forEach { parts.put(obj("type" to "image", "source" to obj("type" to "base64", "media_type" to "image/jpeg", "data" to it))) }
             parts.put(text)
             val c = post("chat", "/v1/messages", obj("model" to model("chat"), "max_tokens" to 2048, "system" to system,
                 "messages" to JSONArray().put(obj("role" to "user", "content" to parts)))).getJSONArray("content")
             return (0 until c.length()).joinToString("") { c.getJSONObject(it).optString("text") }.trim()
         }
-        val user: Any = if (img == null) prompt else JSONArray()
-            .put(obj("type" to "image_url", "image_url" to obj("url" to "data:image/png;base64,$img"))).put(text)
+        val user: Any = if (imgs.isEmpty()) prompt else JSONArray().also { a ->
+            imgs.forEach { a.put(obj("type" to "image_url", "image_url" to obj("url" to "data:image/jpeg;base64,$it"))) }
+            a.put(text)
+        }
         return post("chat", "/chat/completions", obj("model" to model("chat"),
             "messages" to JSONArray().put(obj("role" to "system", "content" to system)).put(obj("role" to "user", "content" to user))))
             .getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content").trim()
@@ -79,5 +82,24 @@ class Ai(val p: SharedPreferences) {
     companion object {
         const val OPENAI = "https://api.openai.com/v1"
         const val ANTHROPIC = "https://api.anthropic.com"
+    }
+}
+
+/** Ubicación aproximada por IP (sin permisos), para que la IA sepa dónde está el usuario. Paridad con fruquis/place.py. Bloqueante. */
+object Place {
+    private var text = ""  // solo se guarda si se obtuvo; si falla, se reintenta en el siguiente mensaje
+
+    fun hint(): String {
+        if (text.isEmpty()) try {
+            val c = URL("https://ipwho.is/").openConnection() as HttpURLConnection
+            c.connectTimeout = 4000
+            c.readTimeout = 4000
+            val d = JSONObject(c.inputStream.use { it.readBytes().decodeToString() })
+            if (d.optBoolean("success")) text = " El usuario está (ubicación aproximada por IP) en ${d.getString("city")}, ${d.getString("region")}, " +
+                "${d.getString("country")}, zona horaria ${d.optJSONObject("timezone")?.optString("id") ?: "?"}. Úsalo para el clima, la hora y lo cercano " +
+                "sin preguntarle la ciudad, salvo que él mencione otro lugar."
+        } catch (_: Exception) {  // sin red o servicio caído: se responde sin ubicación
+        }
+        return text
     }
 }

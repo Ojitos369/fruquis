@@ -67,6 +67,20 @@ def _login_shell(tool: str) -> str | None:
     return out[-1] if out and os.path.isfile(out[-1]) else None
 
 
+@functools.lru_cache(maxsize=8)
+def _store_app(tool: str) -> str | None:
+    """Windows: la app de Codex de la Store (MSIX) no está en el PATH y WindowsApps no se puede listar; la ruta sale de Get-AppxPackage."""
+    if not WIN or tool != "codex":
+        return None
+    ps = "(Get-AppxPackage OpenAI.Codex | Select-Object -First 1).InstallLocation"
+    try:
+        base = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=20, creationflags=NOWIN).stdout.strip()
+    except Exception:
+        return None
+    exe = Path(base) / "app" / "resources" / "codex.exe" if base else None
+    return str(exe) if exe and exe.is_file() else None
+
+
 def detect(tool: str) -> str | None:
     """Búsqueda automática (ignora lo elegido en Ajustes)."""
     pref = os.environ.get(f"{tool.upper()}_BIN")
@@ -83,7 +97,7 @@ def detect(tool: str) -> str | None:
         for p in ([Path(prefix) / f"{tool}.cmd", Path(prefix) / f"{tool}.exe"] if WIN else [Path(prefix) / "bin" / tool]):
             if p.is_file():
                 return str(p)
-    return _login_shell(tool)
+    return _store_app(tool) or _login_shell(tool)
 
 
 def resolve(tool: str) -> str | None:

@@ -1,48 +1,64 @@
 package com.ojitos369.fruquis
 
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -50,17 +66,24 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 import java.util.zip.ZipInputStream
@@ -68,153 +91,406 @@ import java.util.zip.ZipInputStream
 /** Animación a reproducir; cada instancia es distinta, así que relanza la animación aunque sea la misma. */
 private class Play(val anim: String, val ms: Long)
 
+// Paleta de fruquis/theme.py: oscuro, minimalista, un solo acento
+private val BG = Color(0xFF16161C)
+private val PANEL = Color(0xFF1C1C24)
+private val RAISED = Color(0xFF262632)
+private val LINE = Color(0xFF2D2D3A)
+private val TEXT = Color(0xFFECECF1)
+private val DIM = Color(0xFF8D8DA0)
+private val ACCENT = Color(0xFF8A6AE0)
+private val DANGER = Color(0xFFF07178)
+private val SELECTED = Color(0xFF2E2A46)
+
+/** Pestañas como fruquis/shell.py ROOTS. */
+private val TABS = listOf("chat" to "💬" to "Chat", "care" to "🍙" to "Cuidar", "chars" to "🧸" to "Personajes", "settings" to "⚙" to "Ajustes")
+
 /** Versión Android de Fruquis: la mascota animada con las mismas hojas de sprites (character.json) y el mismo tamagotchi que el escritorio.
  *  Mantener en paridad con fruquis/care.py (Care.kt) y con el formato de fruquis/sprites.py (Sprite.kt). La mascota flotante es OverlayService. */
 class MainActivity : ComponentActivity() {
     private val care by lazy { Care(getSharedPreferences("care", MODE_PRIVATE)) }
     private val sprite = Sprite()
-    private var charVersion by mutableStateOf(0)  // sube al importar un personaje
+    private var charVersion by mutableStateOf(0)  // sube al importar o cambiar de personaje
     private var floating by mutableStateOf(false)
+    private var listening by mutableStateOf(false)
+    private var play by mutableStateOf(Play("idle", 0))
+    private val chat = mutableStateListOf<Pair<Boolean, String>>()  // (es del usuario, texto)
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         enableEdgeToEdge()
-        setContent { FruquisTheme { Surface(Modifier.fillMaxSize()) { Home() } } }
+        setContent {
+            MaterialTheme(colorScheme = darkColorScheme(primary = ACCENT, onPrimary = Color.White, background = BG, surface = BG,
+                onBackground = TEXT, onSurface = TEXT, surfaceVariant = RAISED, onSurfaceVariant = DIM, outline = LINE,
+                secondaryContainer = SELECTED, error = DANGER)) { Home() }
+        }
     }
 
     override fun onResume() {
         super.onResume()
         care.load()
         floating = OverlayService.running
+        listening = VoiceService.running
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
 
-    private fun dir() = File(filesDir, "character")
+    private fun dir() = activeDir(this)
 
-    @Composable
-    private fun FruquisTheme(content: @Composable () -> Unit) {
-        val dark = androidx.compose.foundation.isSystemInDarkTheme()
-        val ctx = LocalContext.current
-        MaterialTheme(colorScheme = when {
-            Build.VERSION.SDK_INT >= 31 -> if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
-            dark -> darkColorScheme()
-            else -> lightColorScheme()
-        }, content = content)
+    private fun charName() = listChars()[dir().name] ?: "Fruquis"
+
+    /** Personajes instalados: id → nombre (de character.json), como sprites.list_all. */
+    private fun listChars(): Map<String, String> = (charsDir(this).listFiles() ?: emptyArray()).sortedBy { it.name }
+        .filter { File(it, "character.json").exists() }
+        .associate { it.name to (runCatching { JSONObject(File(it, "character.json").readText()).optString("name", it.name) }.getOrNull() ?: it.name) }
+
+    companion object {
+        fun charsDir(c: Context) = File(c.filesDir, "characters").apply {
+            mkdirs()
+            val old = File(c.filesDir, "character")  // versión anterior: un solo personaje en files/character
+            if (old.exists() && old.renameTo(File(this, "personaje"))) prefs(c).edit().putString("active", "personaje").apply()
+        }
+        private fun prefs(c: Context) = c.getSharedPreferences("app", Context.MODE_PRIVATE)
+        /** Carpeta del personaje activo (store "active" en escritorio); si no existe, la primera que haya. */
+        fun activeDir(c: Context): File {
+            val all = charsDir(c).listFiles { f -> File(f, "character.json").exists() }?.sortedBy { it.name } ?: emptyList()
+            return all.firstOrNull { it.name == prefs(c).getString("active", "") } ?: all.firstOrNull() ?: File(charsDir(c), "_")
+        }
+        fun setActive(c: Context, id: String) = prefs(c).edit().putString("active", id).apply()
+        fun slug(t: String) = t.lowercase().replace(" ", "-").replace("_", "-").replace(Regex("[^a-z0-9-]"), "").trim('-').ifEmpty { "personaje" }
     }
 
     @Composable
     private fun Home() {
-        var play by remember { mutableStateOf(Play("idle", 0)) }
-        var reply by remember { mutableStateOf("") }
-        var dialog by remember { mutableStateOf("") }  // "", "talk" o "ai"
-        val scope = rememberCoroutineScope()
+        var tab by remember { mutableStateOf("care") }
         val tick = remember { mutableLongStateOf(0) }
-
-        val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            if (uri != null) try {
-                contentResolver.openInputStream(uri)!!.use { importZip(it) }
-                charVersion++
-                toast("Personaje importado")
-            } catch (e: Exception) {
-                toast("No se pudo importar: ${e.message}")
-            }
-        }
 
         LaunchedEffect(charVersion) { sprite.load(dir()); sprite.start(play.anim) }
         LaunchedEffect(play) {
             sprite.start(play.anim)
             if (play.ms > 0) { delay(play.ms); play = Play("idle", 0) }
         }
-        LaunchedEffect(Unit) { while (true) { delay(60_000); care.advance(60.0, false) } }
+        LaunchedEffect(Unit) { while (true) { delay(60_000); care.tick() } }
+        LaunchedEffect(Unit) {  // el asistente de voz espera la orden: la mascota de la app también escucha
+            while (true) {
+                delay(300)
+                val left = VoiceService.listenUntil - System.currentTimeMillis()
+                if (left > 0 && play.anim != "listening") play = Play("listening", left)
+            }
+        }
         LaunchedEffect(Unit) { while (true) withFrameMillis { tick.longValue = it } }  // redibuja la mascota en cada cuadro
 
-        Column(Modifier.safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Canvas(Modifier.weight(1f).fillMaxWidth()) {
-                tick.longValue  // lee el estado para que cada cuadro redibuje
-                drawIntoCanvas { sprite.draw(it.nativeCanvas, size.width.toInt(), size.height.toInt()) }
-            }
-            if (reply.isNotEmpty()) Card(Modifier.fillMaxWidth()) {
-                Text(reply, Modifier.heightIn(max = 140.dp).verticalScroll(rememberScrollState()).padding(12.dp))
-            }
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Care.NAMES.forEachIndexed { i, n ->
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("${Care.ICONS[i]} $n", Modifier.padding(end = 4.dp), style = MaterialTheme.typography.labelMedium)
-                        LinearProgressIndicator(progress = { (care.stats[i] / 100).toFloat() }, Modifier.weight(1f))
-                    }
+        Scaffold(containerColor = BG, bottomBar = {
+            NavigationBar(containerColor = PANEL, tonalElevation = 0.dp) {
+                TABS.forEach { (k, label) ->
+                    NavigationBarItem(tab == k.first, { tab = k.first }, icon = { Text(k.second, fontSize = 18.sp) }, label = { Text(label) },
+                        colors = NavigationBarItemDefaults.colors(indicatorColor = SELECTED, selectedTextColor = TEXT, unselectedTextColor = DIM))
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Care.ACTIONS.forEach { a ->
-                    FilledTonalButton({ care.act(a); play = Play(a.anim, 3000) }, Modifier.weight(1f), contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
-                        Text(a.icon)
-                    }
+        }) { pad ->
+            Column(Modifier.padding(pad).fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                when (tab) {
+                    "chat" -> { Pet(tick, Modifier.fillMaxWidth().height(150.dp)); ChatTab() }
+                    "care" -> CareTab(tick)
+                    "chars" -> CharsTab()
+                    "settings" -> SettingsTab()
                 }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton({ picker.launch(arrayOf("*/*")) }, Modifier.weight(1f)) { Text("Importar .zip") }
-                Button({ toggleFloat() }, Modifier.weight(1f)) { Text(if (floating) "Quitar flotante" else "Flotante") }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton({ dialog = "talk" }, Modifier.weight(1f)) { Text("Hablar") }
-                OutlinedButton({ dialog = "ai" }, Modifier.weight(1f)) { Text("Ajustes de IA") }
             }
         }
+    }
 
-        when (dialog) {
-            "talk" -> TalkDialog({ dialog = "" }) { text ->
-                play = Play("talking", 120_000)
-                scope.launch {
-                    reply = withContext(Dispatchers.IO) {
-                        try {
-                            Ai(getSharedPreferences("ai", MODE_PRIVATE)).chat(text, "Eres Fruquis, una mascota tierna. Responde siempre en español, máximo 3 frases.")
-                        } catch (e: Exception) {
-                            "No pude responder (${e.message})"
+    @Composable
+    private fun Pet(tick: androidx.compose.runtime.MutableLongState, m: Modifier) {
+        Canvas(m) {
+            tick.longValue  // lee el estado para que cada cuadro redibuje
+            drawIntoCanvas { sprite.draw(it.nativeCanvas, size.width.toInt(), size.height.toInt()) }
+        }
+    }
+
+    @Composable
+    private fun H1(text: String) = Text(text, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+
+    @Composable
+    private fun Section(text: String) = Text(text.uppercase(), color = DIM, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+
+    @Composable
+    private fun Card(m: Modifier = Modifier, content: @Composable () -> Unit) =
+        Box(m.clip(RoundedCornerShape(16.dp)).background(PANEL).padding(16.dp)) { content() }
+
+    @Composable
+    private fun Pill(text: String, m: Modifier = Modifier, onClick: () -> Unit) =
+        OutlinedButton(onClick, m, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, LINE), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+            colors = ButtonDefaults.outlinedButtonColors(containerColor = RAISED, contentColor = TEXT)) { Text(text, maxLines = 1) }
+
+    @Composable
+    private fun Primary(text: String, m: Modifier = Modifier, onClick: () -> Unit) =
+        Button(onClick, m.height(48.dp), shape = RoundedCornerShape(12.dp)) { Text(text, fontWeight = FontWeight.SemiBold) }
+
+    /** CareView: barras finas (rojas bajo 25) y acciones en píldoras. */
+    @Composable
+    private fun CareTab(tick: androidx.compose.runtime.MutableLongState) {
+        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            H1(remember(charVersion) { charName() })
+            Pet(tick, Modifier.weight(1f).fillMaxWidth())
+            Card(Modifier.fillMaxWidth()) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Care.NAMES.forEachIndexed { i, n ->
+                        val v = care.stats[i]
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(Care.ICONS[i], Modifier.width(26.dp))
+                            Text(n, Modifier.width(84.dp), color = DIM, fontSize = 13.sp)
+                            LinearProgressIndicator(progress = { (v / 100).toFloat() }, Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(4.dp)),
+                                color = if (v < 25) DANGER else ACCENT, trackColor = RAISED, strokeCap = StrokeCap.Round, gapSize = 0.dp, drawStopIndicator = {})
                         }
                     }
-                    play = Play("talking", 2000)
                 }
             }
-            "ai" -> AiDialog(Ai(getSharedPreferences("ai", MODE_PRIVATE))) { dialog = "" }
+            Care.ACTIONS.chunked(3).forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    row.forEach { a -> Pill("${a.icon}  ${a.label}", Modifier.weight(1f)) { care.act(a); play = Play(a.anim, 3000) } }
+                    repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+            Primary(if (floating) "Quitar mascota flotante" else "Mascota flotante", Modifier.fillMaxWidth()) { toggleFloat() }
         }
     }
 
+    /** ChatView: conversación con el personaje activo por la API configurada. */
     @Composable
-    private fun TalkDialog(onDismiss: () -> Unit, onSend: (String) -> Unit) {
+    private fun androidx.compose.foundation.layout.ColumnScope.ChatTab() {
         var text by remember { mutableStateOf("") }
-        AlertDialog(onDismissRequest = onDismiss, title = { Text("Dile algo") },
-            text = { OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth()) },
-            confirmButton = { TextButton({ onSend(text); onDismiss() }) { Text("Enviar") } },
-            dismissButton = { TextButton(onDismiss) { Text("Cancelar") } })
+        var busy by remember { mutableStateOf(false) }
+        var job by remember { mutableStateOf<Job?>(null) }
+        var imgs by remember { mutableStateOf<List<Uri>>(emptyList()) }  // imágenes de referencia para el próximo mensaje
+        var sent by remember { mutableStateOf<List<Uri>>(emptyList()) }  // las del mensaje en curso (vuelven al cancelar)
+        val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { imgs = it }
+        val scope = rememberCoroutineScope()
+        val list = rememberLazyListState()
+
+        fun send(raw: String) {
+            val msg = raw.trim()
+            if (msg.isEmpty() || busy) return
+            if (VoiceService.isNewChat(msg)) { chat.clear(); text = ""; imgs = emptyList(); return }  // «nuevo chat»
+            text = ""
+            busy = true
+            sent = imgs
+            imgs = emptyList()
+            val name = charName()
+            val ctx = chat.takeLast(10).joinToString("\n") { (m, t) -> (if (m) "Tú: " else "$name: ") + t }
+            chat.add(true to msg + if (sent.isEmpty()) "" else "\n📎 ${sent.size} imagen(es)")
+            play = Play("talking", 120_000)
+            job = scope.launch {
+                val reply = withContext(Dispatchers.IO) {
+                    try {
+                        Ai(getSharedPreferences("ai", MODE_PRIVATE)).chat(if (ctx.isEmpty()) msg else "$ctx\nTú: $msg",
+                            "Eres $name, una mascota tierna. Responde siempre en español, máximo 3 frases.", sent.map { jpeg(it) })
+                    } catch (e: Exception) {
+                        "No pude responder (${e.message})"
+                    }
+                }
+                chat.add(false to reply)
+                busy = false
+                play = Play("talking", 2000)
+            }
+        }
+        // botón del micrófono: dicta una orden sin decir el nombre (cuadro de voz del sistema) y la envía
+        val mic = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+            r.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { send(it) }
+        }
+        LaunchedEffect(chat.size) { if (chat.isNotEmpty()) list.animateScrollToItem(chat.size - 1) }
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), list, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (chat.isEmpty()) item { Text("Dile algo a ${charName()} 👋", color = DIM) }
+            items(chat) { (mine, t) ->
+                Box(Modifier.fillMaxWidth(), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
+                    Text(t, Modifier.clip(RoundedCornerShape(14.dp)).background(if (mine) SELECTED else PANEL).padding(horizontal = 12.dp, vertical = 8.dp))
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // clic = adjuntar imágenes; si ya hay, las quita
+            Pill(if (imgs.isEmpty()) "📎" else "📎 ${imgs.size}") { if (imgs.isEmpty()) picker.launch(arrayOf("image/*")) else imgs = emptyList() }
+            Pill("🎙") {
+                try {
+                    mic.launch(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                        .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-MX"))
+                } catch (e: Exception) {
+                    toast("Este teléfono no tiene reconocimiento de voz")
+                }
+            }
+            OutlinedTextField(text, { text = it }, Modifier.weight(1f), placeholder = { Text(if (busy) "Pensando…" else "Escribe…") },
+                shape = RoundedCornerShape(12.dp), colors = fieldColors(), maxLines = 4)
+            Button({
+                if (busy) {  // cancelar: el mensaje y sus imágenes vuelven al cuadro para corregirlos (la petición HTTP termina sola en segundo plano y se descarta)
+                    job?.cancel()
+                    text = chat.removeAt(chat.lastIndex).second.substringBefore("\n📎")  // no removeLast(): falla en Android < 15
+                    imgs = sent
+                    busy = false
+                    play = Play("talking", 500)
+                    return@Button
+                }
+                send(text)
+            }, Modifier.size(52.dp), shape = RoundedCornerShape(12.dp), contentPadding = PaddingValues(0.dp)) { Text(if (busy) "✕" else "➤", fontSize = 18.sp) }
+        }
     }
 
+    /** CharactersView: lista de personajes (● = activo); tocar uno lo activa. Importar no quita a los demás. */
     @Composable
-    private fun AiDialog(ai: Ai, onDismiss: () -> Unit) {
-        val fields = listOf(
-            Triple("chat", "kind", "Chat: formato (openai | anthropic)"), Triple("chat", "url", "Chat: URL base (vacío = oficial)"),
-            Triple("chat", "key", "Chat: clave"), Triple("chat", "model", "Chat: modelo (vacío = predeterminado)"),
-            Triple("image", "url", "Imágenes: URL base (vacío = OpenAI)"), Triple("image", "key", "Imágenes: clave"),
-            Triple("image", "model", "Imágenes: modelo (vacío = gpt-image-1)"))
-        val values = remember { fields.map { (w, k, _) -> mutableStateOf(ai.p.getString("${w}_$k", "")!!) } }
-        AlertDialog(onDismissRequest = onDismiss, title = { Text("IA por API") },
+    private fun androidx.compose.foundation.layout.ColumnScope.CharsTab() {
+        val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) try {
+                val id = contentResolver.openInputStream(uri)!!.use { importZip(it) }
+                if (listChars().size == 1) useChar(id) else { charVersion++; toast("Importado: ${listChars()[id]} · tócalo para usarlo") }
+            } catch (e: Exception) {
+                toast("No se pudo importar: ${e.message}")
+            }
+        }
+        val chars = remember(charVersion) { listChars() }
+        val active = remember(charVersion) { dir().name }
+        var editing by remember { mutableStateOf<String?>(null) }
+        var deleting by remember { mutableStateOf<String?>(null) }
+        H1("Personajes")
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (chars.isEmpty()) Text("No hay personajes. Importa un .zip exportado desde el escritorio.", color = DIM)
+            chars.forEach { (id, name) ->
+                val on = id == active
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (on) SELECTED else Color.Transparent)
+                    .clickable(enabled = !on) { useChar(id) }.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(name, Modifier.weight(1f), fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal)
+                    Text(if (on) "● activo" else "Usar", color = if (on) ACCENT else DIM, fontSize = 12.sp)
+                    Text("✎", Modifier.clickable { editing = id }.padding(start = 14.dp, top = 4.dp, bottom = 4.dp), color = DIM, fontSize = 18.sp)
+                    Text("🗑", Modifier.clickable { deleting = id }.padding(start = 14.dp, top = 4.dp, bottom = 4.dp), color = DIM, fontSize = 18.sp)
+                }
+            }
+        }
+        Primary("Importar personaje (.zip)", Modifier.fillMaxWidth()) { picker.launch(arrayOf("*/*")) }
+        editing?.let { EditCharDialog(it) { editing = null } }
+        deleting?.let { id ->
+            AlertDialog(onDismissRequest = { deleting = null }, containerColor = PANEL,
+                title = { Text("Eliminar personaje") },
+                text = { Text("¿Eliminar a ${chars[id] ?: id}? No se puede deshacer.") },
+                confirmButton = { TextButton({ deleteChar(id); deleting = null }) { Text("Eliminar", color = Color(0xFFF07178)) } },
+                dismissButton = { TextButton({ deleting = null }) { Text("Cancelar", color = DIM) } })
+        }
+    }
+
+    /** Edita nombre, descripción, identidad y anatomía en character.json (se conservan los demás campos, como sprites.set_profile). */
+    @Composable
+    private fun EditCharDialog(id: String, onClose: () -> Unit) {
+        val f = File(File(charsDir(this), id), "character.json")
+        val j = remember(id) { JSONObject(f.readText()) }
+        val keys = listOf("name" to "Nombre", "description" to "Descripción", "identity" to "Identidad visual", "anatomy" to "Anatomía y movimiento")
+        val values = remember(id) { keys.map { (k, _) -> mutableStateOf(j.optString(k, if (k == "name") id else "")) } }
+        AlertDialog(onDismissRequest = onClose, containerColor = PANEL,
+            title = { Text("Editar personaje") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    fields.forEachIndexed { i, (_, k, hint) ->
-                        val secret = k == "key"
-                        OutlinedTextField(values[i].value, { values[i].value = it }, Modifier.fillMaxWidth(), label = { Text(hint) }, singleLine = true,
-                            visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
-                            keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else KeyboardType.Text))
+                    keys.forEachIndexed { i, (_, label) ->
+                        OutlinedTextField(values[i].value, { values[i].value = it }, Modifier.fillMaxWidth(), label = { Text(label) }, singleLine = i == 0,
+                            shape = RoundedCornerShape(12.dp), colors = fieldColors())
                     }
                 }
             },
             confirmButton = {
                 TextButton({
-                    ai.p.edit().apply { fields.forEachIndexed { i, (w, k, _) -> putString("${w}_$k", values[i].value.trim()) } }.apply()
-                    onDismiss()
+                    val name = values[0].value.trim()
+                    if (name.isEmpty()) return@TextButton toast("El nombre no puede estar vacío")
+                    keys.forEachIndexed { i, (k, _) -> j.put(k, values[i].value.trim()) }
+                    f.writeText(j.toString(1))
+                    charVersion++
+                    onClose()
                 }) { Text("Guardar") }
             },
-            dismissButton = { TextButton(onDismiss) { Text("Cancelar") } })
+            dismissButton = { TextButton(onClose) { Text("Cancelar", color = DIM) } })
+    }
+
+    /** Ajustes de IA por API (en Android no hay binarios claude/codex). Mismas claves que Ai.kt. */
+    @Composable
+    private fun androidx.compose.foundation.layout.ColumnScope.SettingsTab() {
+        val ai = remember { Ai(getSharedPreferences("ai", MODE_PRIVATE)) }
+        val fields = listOf(
+            Triple("chat", "kind", "Formato (openai | anthropic)"), Triple("chat", "url", "URL base (vacío = oficial)"),
+            Triple("chat", "key", "Clave"), Triple("chat", "model", "Modelo (vacío = predeterminado)"),
+            Triple("image", "url", "URL base (vacío = OpenAI)"), Triple("image", "key", "Clave"),
+            Triple("image", "model", "Modelo (vacío = gpt-image-1)"))
+        val values = remember { fields.map { (w, k, _) -> mutableStateOf(ai.p.getString("${w}_$k", "")!!) } }
+        H1("Ajustes")
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            fields.forEachIndexed { i, (w, k, hint) ->
+                if (i == 0) Section("Chat por API")
+                if (i == 4) { Spacer(Modifier.height(8.dp)); Section("Imágenes por API") }
+                val secret = k == "key"
+                OutlinedTextField(values[i].value, { values[i].value = it }, Modifier.fillMaxWidth(), label = { Text(hint) }, singleLine = true,
+                    shape = RoundedCornerShape(12.dp), colors = fieldColors(),
+                    visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+                    keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else KeyboardType.Text))
+            }
+        }
+        var pick by remember { mutableStateOf(false) }
+        if (Build.VERSION.SDK_INT >= 31) Pill("🎙 Micrófono", Modifier.fillMaxWidth()) { pick = true }  // Android solo deja elegir la entrada desde la 12
+        if (pick) {
+            val mics = getSystemService(android.media.AudioManager::class.java).availableCommunicationDevices
+            val prefs = getSharedPreferences("app", MODE_PRIVATE)
+            AlertDialog(onDismissRequest = { pick = false }, containerColor = PANEL, title = { Text("Micrófono") },
+                text = {
+                    Column {
+                        TextButton({ prefs.edit().remove("mic").apply(); pick = false; toast("Micrófono: predeterminado (aplica al reactivar el asistente)") }) { Text("Predeterminado del sistema") }
+                        mics.forEach { d ->
+                            TextButton({ prefs.edit().putInt("mic", d.id).apply(); pick = false; toast("Micrófono: ${d.productName} (aplica al reactivar el asistente)") }) { Text("${d.productName}") }
+                        }
+                    }
+                },
+                confirmButton = {}, dismissButton = { TextButton({ pick = false }) { Text("Cancelar", color = DIM) } })
+        }
+        Primary(if (listening) "Dejar de escuchar su nombre" else "Asistente por voz (di su nombre)", Modifier.fillMaxWidth()) { toggleVoice() }
+        Primary("Guardar", Modifier.fillMaxWidth()) {
+            ai.p.edit().apply { fields.forEachIndexed { i, (w, k, _) -> putString("${w}_$k", values[i].value.trim()) } }.apply()
+            toast("Ajustes guardados")
+        }
+    }
+
+    @Composable
+    private fun fieldColors() = OutlinedTextFieldDefaults.colors(focusedContainerColor = PANEL, unfocusedContainerColor = PANEL,
+        unfocusedBorderColor = LINE, focusedBorderColor = ACCENT, cursorColor = ACCENT, focusedLabelColor = ACCENT, unfocusedLabelColor = DIM)
+
+    private fun useChar(id: String) {
+        setActive(this, id)
+        chat.clear()  // otro personaje: chat nuevo
+        charVersion++
+        toast("Ahora es ${listChars()[id] ?: id}")
+        if (OverlayService.running) startService(Intent(this, OverlayService::class.java).setAction(OverlayService.RELOAD))
+    }
+
+    /** Imagen adjunta lista para la API: reducida a 1280 px como máximo y en JPEG, para no mandar fotos enormes. */
+    private fun jpeg(uri: Uri): ByteArray {
+        val src = contentResolver.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it) } ?: throw Exception("no es una imagen válida")
+        val s = minOf(1f, 1280f / maxOf(src.width, src.height))
+        val bmp = if (s < 1f) Bitmap.createScaledBitmap(src, (src.width * s).toInt(), (src.height * s).toInt(), true) else src
+        return ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
+    }
+
+    /** Borra el personaje; si era el activo, `activeDir` cae al primero que quede y la mascota flotante se recarga. */
+    private fun deleteChar(id: String) {
+        val name = listChars()[id] ?: id
+        if (!File(charsDir(this), id).deleteRecursively()) return toast("No se pudo eliminar")
+        charVersion++
+        toast("Eliminado: $name")
+        if (OverlayService.running) startService(Intent(this, OverlayService::class.java).setAction(OverlayService.RELOAD))
+    }
+
+    // ---- asistente por voz (VoiceService) ----
+    private fun toggleVoice() {
+        if (VoiceService.running) {
+            startService(Intent(this, VoiceService::class.java).setAction(VoiceService.STOP))
+            listening = false
+            return
+        }
+        if (checkSelfPermission("android.permission.RECORD_AUDIO") != PackageManager.PERMISSION_GRANTED) {
+            toast("Permite el micrófono y vuelve a pulsar")
+            requestPermissions(arrayOf("android.permission.RECORD_AUDIO"), 3)
+            return
+        }
+        startForegroundService(Intent(this, VoiceService::class.java))
+        listening = true
     }
 
     // ---- mascota flotante (OverlayService) ----
@@ -237,13 +513,15 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Extrae solo .json/.png/.md y por nombre de archivo (el zip trae <id>/<archivo>): no hay rutas que escapen de la carpeta. */
-    private fun importZip(input: InputStream) {
+    private fun importZip(input: InputStream): String {
         val tmp = File(filesDir, "character.tmp")
         tmp.deleteRecursively()
         tmp.mkdirs()
+        var root = ""
         ZipInputStream(input).use { z ->
             var total = 0L
             generateSequence { z.nextEntry }.forEach { e ->
+                if (root.isEmpty() && e.name.contains('/')) root = e.name.substringBefore('/')
                 val n = File(e.name).name
                 if (e.isDirectory || !Regex("[\\w.\\- ]+\\.(json|png|md)").matches(n)) return@forEach
                 File(tmp, n).outputStream().use { o ->
@@ -259,7 +537,13 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (!File(tmp, "character.json").exists()) { tmp.deleteRecursively(); throw Exception("falta character.json") }
-        dir().deleteRecursively()
-        if (!tmp.renameTo(dir())) throw Exception("no se pudo guardar")
+        // mismo id que sprites.import_character: carpeta raíz del zip (o el nombre), con sufijo -2, -3… si ya existe
+        val base = slug(root.ifEmpty { JSONObject(File(tmp, "character.json").readText()).optString("name", "personaje") })
+        val taken = listChars().keys
+        var id = base
+        var k = 2
+        while (id in taken) id = "$base-${k++}"
+        if (!tmp.renameTo(File(charsDir(this), id))) throw Exception("no se pudo guardar")
+        return id
     }
 }

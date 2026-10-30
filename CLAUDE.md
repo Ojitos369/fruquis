@@ -21,6 +21,9 @@ Fruquis existe en **dos apps** que deben mantenerse en paridad:
 - Hojas de sprites y animaciones de respaldo: `fruquis/sprites.py` (`WANTED`) y `fruquis/app.py` ↔ `Sprite.kt` (`FALLBACK`) y el `Canvas` de `MainActivity.kt`.
 - Mascota flotante: `fruquis/app.py` (caminar, trepar, lanzar, caer) ↔ `OverlayService.kt` (ventana superpuesta + servicio en primer plano; `Sprite.kt` es el lector de hojas compartido). Estados y animaciones deben coincidir.
 - IA (binario o API, oficial o propia): `fruquis/provider.py` ↔ `Ai.kt` (valores por defecto, rutas y formato de ajustes). En escritorio todo uso de IA pasa por `provider` (`api_text`, `api_image`, `vision`); no llames a `claude`/`codex` directo desde código nuevo. Android solo tiene API (sin binarios).
+- Solo escritorio (no aplica a Android): ver/controlar ventanas (`control.py`, `winctx.py`) y casilla «Navegador» (`chat.ask` lanza el CLI con `--chrome`, sin `--strict-mcp-config`, que bloquea la extensión).
+- Ubicación aproximada (por IP, se añade al prompt de sistema del chat): `fruquis/place.py` ↔ `Place` en `Ai.kt`.
+- Asistente por voz (nombre del personaje + orden, «detener», cambio de personaje): `fruquis/voice.py` (Whisper local) y `chatui.pick_character` ↔ `VoiceService.kt` (reconocedor del sistema; mismos criterios de nombre y de alto). En escritorio todo lo oído y respondido se registra en `~/.fruquis/voice.log` (JSON por línea: `oido`, `pedido`, `respuesta`, `detenido`…): revísalo al depurar la voz. Android aún no guarda registro.
 - Importar personajes (.zip con `<id>/character.json` + .png/.md): `sprites.py` ↔ `MainActivity.importZip`.
 
 ## Convenciones

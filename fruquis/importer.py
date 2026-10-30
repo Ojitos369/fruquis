@@ -21,8 +21,17 @@ def _alpha(im: Image.Image) -> Image.Image:
     corner = a[0, 0, :3].astype(int)
     rgb = a[..., :3].astype(int)
     near = (np.abs(rgb - corner).sum(-1) < 60)
-    if corner[0] > 200 and corner[2] > 200 and corner[1] < 90:  # croma magenta: también el borde mezclado (rosa/violeta casi puro) pasa a transparente
-        near |= (rgb[..., 0] > 190) & (rgb[..., 2] > 190) & (rgb[..., 1] < 120)
+    if corner.max() - corner.min() < 30 and corner.min() > 90:  # «cuadrícula de transparencia» dibujada por la IA: casillas blancas y grises alternas
+        near |= (rgb.max(-1) - rgb.min(-1) < 30) & (rgb.min(-1) > 90)
+    # solo el fondo conectado con el borde: un color parecido dentro del personaje (capucha oscura sobre fondo oscuro) se conserva
+    lab, _ = ndimage.label(near)
+    edge = np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))
+    near = np.isin(lab, edge[edge > 0])
+    pink = (rgb[..., 0] > 190) & (rgb[..., 2] > 190) & (rgb[..., 1] < 120)
+    # croma magenta: también el borde mezclado (rosa/violeta casi puro) pasa a transparente; aunque la esquina sea de otro color (márgenes blancos)
+    if (corner[0] > 200 and corner[2] > 200 and corner[1] < 90) or pink.mean() > 0.1:
+        near |= pink
+    # shortcut: huecos de fondo cerrados (entre tentáculos) de un fondo no magenta quedan opacos; mejor que borrar el personaje
     a = a.copy()
     a[near, 3] = 0
     return Image.fromarray(a)
@@ -42,23 +51,24 @@ def _runs(flags: np.ndarray, gap: int) -> list:
     return out + [(int(start), int(prev) + 1)]
 
 
-def _split_run(band: np.ndarray) -> list:
+def _split_run(band: np.ndarray, want: int = 0) -> list:
     """Parte un tramo ancho en cuadros cuando sus poses se tocan: busca el mayor número de cortes iguales cuyos valles de la silueta
-    (las columnas con menos píxeles) son claramente más bajos que el resto. Devuelve [(x0, x1)] relativos al tramo."""
+    (las columnas con menos píxeles) son claramente más bajos que el resto. Con `want` (cuántas poses caben, por el ancho de sus vecinas)
+    corta en ese número aunque el tramo no sea tan ancho. Devuelve [(x0, x1)] relativos al tramo."""
     h, w = band.shape
-    if w < h * 1.45:
+    if w < h * 1.45 and want < 2:
         return [(0, w)]
     prof = np.convolve(band.sum(0).astype(float), np.ones(max(3, h // 40)) / max(3, h // 40), mode="same")
     ref = np.median(prof[prof > 0]) or 1.0
-    for n in range(min(12, int(w / (h * 0.35))), 1, -1):
+    for n in ([want] if want > 1 else range(min(12, int(w / (h * 0.35))), 1, -1)):
         fw = w / n
-        if not 0.35 * h <= fw <= 2.0 * h:
+        if not want and not 0.35 * h <= fw <= 2.0 * h:
             continue
         cuts = []
         for k in range(1, n):
             lo, hi = int(k * fw - fw * 0.18), int(k * fw + fw * 0.18)
             cuts.append(lo + int(np.argmin(prof[lo:hi])))
-        if np.mean([prof[c] for c in cuts]) / ref < 0.35:
+        if want or np.mean([prof[c] for c in cuts]) / ref < 0.35:
             edges = [0, *cuts, w]
             return [(a, b) for a, b in zip(edges, edges[1:])]
     return [(0, w)]
@@ -213,12 +223,17 @@ def analyze(path: str, cell: tuple, pad: int = 6, ai: bool | None = None) -> lis
     a = a.copy()
     a[~mask, 3] = 0
     lab = np.where(mask, lab, 0)
-    gap = max(2, d * 2)
+    gap = max(2, d)  # con d*2 dos poses a ~17 px (orejas anchas) se fundían en una sola
     dens = lambda m, ax: m.sum(ax) > 0.012 * m.sum(ax).max()  # ignora los hilos de motas entre filas
     rows = _runs(dens(mask, 1), 2)
     frames = []
     for y0, y1 in rows:
-        cols = [(x0 + a_, x0 + b_) for x0, x1 in _runs(dens(mask[y0:y1], 0), gap) for a_, b_ in _split_run(mask[y0:y1, x0:x1])]
+        runs = _runs(dens(mask[y0:y1], 0), gap)
+        ws = [x1 - x0 for x0, x1 in runs]
+        mw = float(min(w for w in ws if w >= 0.5 * np.median(ws))) if len(ws) >= 2 else 0  # ancho de una pose suelta (la más angosta que no es un resto)
+        # un tramo ~2× más ancho que el más angosto de su fila son varias poses pegadas: se parte en ese número
+        cols = [(x0 + a_, x0 + b_) for x0, x1 in runs
+                for a_, b_ in _split_run(mask[y0:y1, x0:x1], round((x1 - x0) / mw) if mw and (x1 - x0) > 1.8 * mw else 0)]  # poses de frente/perfil difieren ~1.5×: solo es «pegada» si mide casi el doble
         frames.append([(x0, y0, x1, y1) for x0, x1 in cols])
     # fila con menos cuadros que el resto y mucho más ancha que uno: se parte en partes iguales
     most = max(len(r) for r in frames)

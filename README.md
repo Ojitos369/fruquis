@@ -98,7 +98,7 @@ Si el id ya existe se importa con sufijo (`-2`, `-3`…) para no pisar nada. El 
 <details>
 <summary><b>🎬 Animaciones que conoce</b></summary>
 
-`idle` · `running-right` · `running-left` · `jumping` · `waving` · `failed` · `waiting` · `review` · `talking` · `sleeping` · `sitting` · `dragged` · `falling` · `climbing` · `poking` · `typing` · `playing` · `eating` · `cleaning` · `pampered` · `look` (16 cuadros, sigue el cursor)
+`idle` · `running-right` · `running-left` · `jumping` · `waving` · `failed` · `waiting` · `review` · `talking` · `sleeping` · `sitting` · `dragged` · `falling` · `climbing` · `clinging` · `poking` · `typing` · `playing` · `eating` · `cleaning` · `pampered` · `look` (16 cuadros, sigue el cursor)
 
 Las que falten usan una **animación de respaldo** (por ejemplo `sleeping` → `waiting`). `climbing` se dibuja de pie y la app la rota sobre paredes y techo.
 
