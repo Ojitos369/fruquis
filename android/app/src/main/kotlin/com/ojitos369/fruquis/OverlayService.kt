@@ -19,16 +19,17 @@ import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import java.io.File
 import kotlin.math.hypot
 import kotlin.random.Random
 
-/** Mascota flotante sobre las demás apps (como los shimejis): camina por el piso, trepa las paredes, se agarra y se lanza con físicas, y al
- *  tocarla saluda. Ventana TYPE_APPLICATION_OVERLAY (permiso «Mostrar sobre otras apps») mantenida por un servicio en primer plano.
+/** Mascota flotante sobre las demás apps (como los shimejis): camina por el piso, trepa las paredes, se agarra y se lanza con físicas.
+ *  Tocarla abre el menú (como el clic en el escritorio) y jalarla la mueve. Ventana TYPE_APPLICATION_OVERLAY (permiso «Mostrar sobre otras apps») mantenida por un servicio en primer plano.
  *  Paridad con el escritorio (fruquis/app.py): mismas animaciones (running-*, climbing, dragged, falling, waving, idle). */
 class OverlayService : Service() {
     private val h = Handler(Looper.getMainLooper())
@@ -55,6 +56,7 @@ class OverlayService : Service() {
     private var freeFrac = 0.35f
     private val care by lazy { Care(getSharedPreferences("care", MODE_PRIVATE)) }
     private var menu: View? = null  // menú de acciones al tocarla (ventana propia)
+    private var menuClosed = 0L
     private var careAt = 0L
     private var lowAt = 0L
 
@@ -83,8 +85,14 @@ class OverlayService : Service() {
             if (freeSide.isNotEmpty() && (state == WALL || state == CLING)) setState(FALL, 0)  // se suelta de la pared y cae al piso
             return START_NOT_STICKY
         }
-        if (i?.action == RELOAD && view != null) {  // se eligió otro personaje en el catálogo
+        if (i?.action == RELOAD && view != null) {  // otro personaje, animación editada o nuevo tamaño (Ajustes)
             if (sp.load(MainActivity.activeDir(this))) sp.start(anim)
+            resize()
+            return START_NOT_STICKY
+        }
+        if (i?.action == PREVIEW && view != null) {  // «Probar en la mascota» del catálogo: la reproduce un rato, de pie en el piso
+            closeMenu()
+            preview(i.getStringExtra("anim") ?: "idle")
             return START_NOT_STICKY
         }
         startInForeground()
@@ -113,7 +121,7 @@ class OverlayService : Service() {
         running = true
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         density = resources.displayMetrics.density
-        size = (SIZE_DP * density).toInt()
+        size = petSize()
         // IN_SCREEN + NO_LIMITS + recorte de cámara: x/y son de la pantalla completa y el sistema no recorta la ventana contra las barras
         // (sin esto, al arrastrarla cerca de un borde la ventana se quedaba fija y el personaje salía cortado)
         lp = WindowManager.LayoutParams(size, size, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -137,6 +145,25 @@ class OverlayService : Service() {
     // medidas en caché: leerlas en cada tick (llamada al sistema) hacía que el movimiento se trabara
     private var metrics: DisplayMetrics? = null
     private var navH = -1
+
+    /** Tamaño en Ajustes (store "scale" del escritorio: 0.3–1.2, 0.6 por defecto). */
+    private fun petSize() = (getSharedPreferences("app", MODE_PRIVATE).getFloat("scale", 0.6f) * SIZE_DP * density).toInt()
+
+    private fun resize() {
+        val s = petSize()
+        if (s == size) return
+        y += size - s  // mantiene los pies donde estaban
+        size = s
+        lp.width = s
+        lp.height = s
+        view?.let { wm.updateViewLayout(it, lp) }
+    }
+
+    private fun preview(name: String) {
+        y = floor()
+        anim = name
+        setState(IDLE, 3000)
+    }
 
     private fun screen() = metrics ?: DisplayMetrics().also { wm.defaultDisplay.getRealMetrics(it); metrics = it }
 
@@ -166,44 +193,61 @@ class OverlayService : Service() {
         sp.start(anim)
     }
 
-    /** Menú al tocarla: las acciones del tamagotchi (como el clic en el escritorio); ❗ marca la que sube la barra más baja. */
-    private fun showMenu() {
+    /** Menú al tocarla, como Pet.menu del escritorio: acciones del tamagotchi (❗ marca la que sube la barra más baja), «Animación» para
+     *  reproducir cualquiera, abrir la app en Chat / Cuidar / Personajes y quitarla de la pantalla. Mientras está abierto la mascota se queda quieta. */
+    private fun showMenu(anims: Boolean = false) {
         closeMenu()
-        care.tick()
-        val w = care.worst()
         val pad = (8 * density).toInt()
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xEE222222.toInt())
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        fun item(text: String, dim: Boolean = false, fn: () -> Unit) = col.addView(TextView(this).apply {
+            this.text = text
+            setTextColor(if (dim) 0xFF8D8DA0.toInt() else 0xFFECECF1.toInt())
+            textSize = 16f
+            setPadding(pad * 2, (pad * 1.4f).toInt(), pad * 2, (pad * 1.4f).toInt())
+            setOnClickListener { fn() }
+        })
+        if (anims) {
+            item("‹  Volver", true) { showMenu() }
+            sp.names.sortedBy { Sprite.label(it) }.forEach { n -> item(Sprite.label(n)) { closeMenu(); preview(n) } }
+        } else {
+            care.tick()
+            val w = care.worst()
+            Care.ACTIONS.forEach { a ->
+                item((if (w >= 0 && a.fx[w] > 0) "❗ " else "") + "${a.icon}  ${a.label}") { closeMenu(); care.act(a); anim = a.anim; setState(IDLE, 3000) }
+            }
+            item("🎬  Animación  ›") { showMenu(true) }
+            listOf("chat" to "💬  Chat", "care" to "🍙  Cuidar", "chars" to "🧸  Personajes").forEach { (tab, label) ->
+                item(label) {
+                    closeMenu()
+                    startActivity(Intent(this, MainActivity::class.java).putExtra("tab", tab).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+                }
+            }
+            item("✕  Quitar de la pantalla", true) { closeMenu(); stopSelf() }
+        }
+        val scr = screen()
+        col.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        val menuW = col.measuredWidth + 2 * pad
+        val menuH = minOf(col.measuredHeight + 2 * pad, (scr.heightPixels * 0.6f).toInt())  // la lista de animaciones es larga: se desplaza
+        val root = ScrollView(this).apply {
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(0xF01C1C24.toInt()); cornerRadius = 16 * density }
             setPadding(pad, pad, pad, pad)
+            addView(col)
             setOnTouchListener { _, e -> if (e.action == MotionEvent.ACTION_OUTSIDE) closeMenu(); false }
         }
-        Care.ACTIONS.forEach { a ->
-            col.addView(TextView(this).apply {
-                text = (if (w >= 0 && a.fx[w] > 0) "❗ " else "") + "${a.icon} ${a.label}"
-                setTextColor(0xFFFFFFFF.toInt())
-                textSize = 16f
-                setPadding(pad * 2, pad, pad * 2, pad)
-                setOnClickListener { closeMenu(); care.act(a); anim = a.anim; setState(IDLE, 3000) }
-            })
-        }
-        val menuW = (170 * density).toInt()
-        val menuH = (240 * density).toInt()
         val px = x.toInt()  // dentro de apply{} x/y serían los del LayoutParams
         val py = y.toInt()
-        val mlp = WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+        val mlp = WindowManager.LayoutParams(menuW, menuH, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH, PixelFormat.TRANSLUCENT).apply {
             gravity = Gravity.TOP or Gravity.LEFT
-            x = px.coerceIn(0, maxOf(0, screen().widthPixels - menuW))
-            y = if (py + size + menuH > screen().heightPixels) maxOf(0, py - menuH) else py + size
+            x = (px + size / 2 - menuW / 2).coerceIn(0, maxOf(0, scr.widthPixels - menuW))
+            y = (if (py - menuH > 0) py - menuH else py + size).coerceIn(0, maxOf(0, scr.heightPixels - menuH))  // arriba de ella; si no cabe, abajo
         }
-        wm.addView(col, mlp)
-        menu = col
+        wm.addView(root, mlp)
+        menu = root
     }
 
     private fun closeMenu() {
-        menu?.let { wm.removeView(it) }
+        menu?.let { wm.removeView(it); menuClosed = System.currentTimeMillis() }
         menu = null
     }
 
@@ -247,7 +291,7 @@ class OverlayService : Service() {
                 setState(IDLE, if (ls) VoiceService.listenUntil - now else 600)
             }
         }
-        if (!held) when (state) {  // con el dedo encima se queda quieto: si no, se movía bajo el dedo y el arrastre saltaba
+        if (!held && menu == null) when (state) {  // con el dedo encima o el menú abierto se queda quieta: si no, se movía bajo el dedo y el arrastre saltaba
             IDLE -> { y = fl; if (now > until) next() }
             WALK -> {
                 x += dir * SPEED_DP * density * dt
@@ -289,6 +333,12 @@ class OverlayService : Service() {
         h.postDelayed(::tick, 33)
     }
 
+    /** Estado para depurar por adb: `adb shell dumpsys activity service com.ojitos369.fruquis/.OverlayService`. */
+    override fun dump(fd: java.io.FileDescriptor?, w: java.io.PrintWriter, args: Array<out String>?) {
+        w.println("state=$state anim=$anim sprite=${sp.current} held=$held menu=${menu != null} x=$x y=$y rot=$rot until=${until - System.currentTimeMillis()} " +
+            "size=$size view=${view?.let { "${it.width}x${it.height} vis=${it.visibility} alpha=${it.alpha} rot=${it.rotation} attached=${it.isAttachedToWindow}" }}")
+    }
+
     override fun onDestroy() {
         h.removeCallbacksAndMessages(null)
         closeMenu()
@@ -299,6 +349,9 @@ class OverlayService : Service() {
     }
 
     private inner class PetView : View(this@OverlayService) {
+        // aquí `x`/`y` a secas son la traslación de la propia View: usarlos movía el dibujo fuera de su ventana y al jalarla se cortaba o
+        // desaparecía. La posición de la mascota es la del servicio.
+        private val pet = this@OverlayService
         private var offX = 0f
         private var offY = 0f
         private var downX = 0f
@@ -309,6 +362,8 @@ class OverlayService : Service() {
         private var my = 0f
         private var lastT = 0L
         private var dragging = false
+        private var hadMenu = false
+        private val slop = ViewConfiguration.get(this@OverlayService).scaledTouchSlop.toFloat()
 
         override fun onDraw(c: Canvas) {
             sp.draw(c, width, height)
@@ -319,18 +374,23 @@ class OverlayService : Service() {
             val ry = e.rawY
             val now = e.eventTime  // hora del evento, no del proceso: velocidad de lanzamiento más estable
             when (e.action) {
-                MotionEvent.ACTION_DOWN -> { held = true; offX = rx - x; offY = ry - y; downX = rx; downY = ry; lastX = rx; lastY = ry; lastT = now; mx = 0f; my = 0f; dragging = false }
+                MotionEvent.ACTION_DOWN -> {
+                    held = true; offX = rx - pet.x; offY = ry - pet.y; downX = rx; downY = ry; lastX = rx; lastY = ry; lastT = now; mx = 0f; my = 0f; dragging = false
+                    hadMenu = menu != null || System.currentTimeMillis() - menuClosed < 400  // el toque fuera del menú ya lo cerró: este toque solo lo cierra
+                    closeMenu()
+                }
                 MotionEvent.ACTION_MOVE -> {
-                    if (!dragging && hypot(rx - downX, ry - downY) > 12 * density) { dragging = true; setState(DRAG, 0) }
+                    // jalar = mover; menos que el umbral del sistema cuenta como toque (antes 12 dp fijos: un dedo tembloroso la arrastraba sin querer)
+                    if (!dragging && hypot(rx - downX, ry - downY) > slop * 1.5f) { dragging = true; rot = 0f; this.rotation = 0f; setState(DRAG, 0) }
                     if (dragging) {
                         val dtm = maxOf(1L, now - lastT) / 1000f
                         mx = 0.5f * mx + 0.5f * (rx - lastX) / dtm  // velocidad del dedo (suavizada) para el lanzamiento
                         my = 0.5f * my + 0.5f * (ry - lastY) / dtm
                         lastX = rx; lastY = ry; lastT = now
-                        x = rx - offX
-                        y = ry - offY
-                        lp.x = x.toInt()  // mueve la ventana ya, no hasta el siguiente tick: si no, el personaje se corta tras el dedo
-                        lp.y = y.toInt()
+                        pet.x = rx - offX
+                        pet.y = ry - offY
+                        lp.x = pet.x.toInt()  // mueve la ventana ya, no hasta el siguiente tick: si no, el personaje se corta tras el dedo
+                        lp.y = pet.y.toInt()
                         wm.updateViewLayout(this, lp)
                     }
                 }
@@ -343,9 +403,8 @@ class OverlayService : Service() {
                         vx = (if (stale) 0f else mx).coerceIn(-cap, cap)
                         vy = (if (stale) 0f else my).coerceIn(-cap, cap)
                         setState(FALL, 0)
-                    } else if (e.action == MotionEvent.ACTION_UP) {
-                        anim = "waving"
-                        setState(IDLE, 2000)
+                    } else if (e.action == MotionEvent.ACTION_UP && !hadMenu) {  // tocar = abrir el menú (otra vez = cerrarlo)
+                        if (state == IDLE || state == WALK) { anim = "waving"; setState(IDLE, 2000) }
                         showMenu()
                     }
                 }
@@ -360,6 +419,7 @@ class OverlayService : Service() {
         const val RELOAD = "com.ojitos369.fruquis.RELOAD"
         const val MOVE = "com.ojitos369.fruquis.MOVE"
         const val FREE = "com.ojitos369.fruquis.FREE"
+        const val PREVIEW = "com.ojitos369.fruquis.PREVIEW"
         const val CHANNEL = "pet"
         @Volatile var running = false
         private const val IDLE = 0
@@ -368,7 +428,7 @@ class OverlayService : Service() {
         private const val FALL = 3
         private const val DRAG = 4
         private const val CLING = 5
-        private const val SIZE_DP = 120f
+        private const val SIZE_DP = 200f  // al 100 %; 0.6 (predeterminado) = 120 dp
         private const val SPEED_DP = 60f
         private const val CLIMB_DP = 70f
         private const val GRAVITY_DP = 1400f

@@ -12,6 +12,7 @@ import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -29,6 +30,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,11 +41,16 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -86,7 +94,9 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
+import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 /** Animación a reproducir; cada instancia es distinta, así que relanza la animación aunque sea la misma. */
 private class Play(val anim: String, val ms: Long)
@@ -115,6 +125,7 @@ class MainActivity : ComponentActivity() {
     private var listening by mutableStateOf(false)
     private var play by mutableStateOf(Play("idle", 0))
     private val chat = mutableStateListOf<Pair<Boolean, String>>()  // (es del usuario, texto)
+    private var tab by mutableStateOf("care")  // la mascota flotante abre la app en una pestaña (extra "tab")
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -124,6 +135,12 @@ class MainActivity : ComponentActivity() {
                 onBackground = TEXT, onSurface = TEXT, surfaceVariant = RAISED, onSurfaceVariant = DIM, outline = LINE,
                 secondaryContainer = SELECTED, error = DANGER)) { Home() }
         }
+        intent?.getStringExtra("tab")?.let { tab = it }
+    }
+
+    override fun onNewIntent(i: Intent) {
+        super.onNewIntent(i)
+        i.getStringExtra("tab")?.let { tab = it }
     }
 
     override fun onResume() {
@@ -138,6 +155,13 @@ class MainActivity : ComponentActivity() {
     private fun dir() = activeDir(this)
 
     private fun charName() = listChars()[dir().name] ?: "Fruquis"
+
+    private fun charDesc() = runCatching { JSONObject(File(dir(), "character.json").readText()).optString("description") }.getOrDefault("")
+
+    /** Avisa a la mascota flotante que recargue personaje, animaciones o tamaño. */
+    private fun reloadFloat() {
+        if (OverlayService.running) startService(Intent(this, OverlayService::class.java).setAction(OverlayService.RELOAD))
+    }
 
     /** Personajes instalados: id → nombre (de character.json), como sprites.list_all. */
     private fun listChars(): Map<String, String> = (charsDir(this).listFiles() ?: emptyArray()).sortedBy { it.name }
@@ -162,7 +186,6 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun Home() {
-        var tab by remember { mutableStateOf("care") }
         val tick = remember { mutableLongStateOf(0) }
 
         LaunchedEffect(charVersion) { sprite.load(dir()); sprite.start(play.anim) }
@@ -188,11 +211,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }) { pad ->
-            Column(Modifier.padding(pad).fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(Modifier.padding(pad).consumeWindowInsets(pad).imePadding().fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 when (tab) {
-                    "chat" -> { Pet(tick, Modifier.fillMaxWidth().height(150.dp)); ChatTab() }
+                    "chat" -> ChatTab(tick)
                     "care" -> CareTab(tick)
-                    "chars" -> CharsTab()
+                    "chars" -> CharsTab(tick)
                     "settings" -> SettingsTab()
                 }
             }
@@ -200,10 +223,10 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun Pet(tick: androidx.compose.runtime.MutableLongState, m: Modifier) {
+    private fun Pet(tick: androidx.compose.runtime.MutableLongState, m: Modifier, sp: Sprite = sprite) {
         Canvas(m) {
             tick.longValue  // lee el estado para que cada cuadro redibuje
-            drawIntoCanvas { sprite.draw(it.nativeCanvas, size.width.toInt(), size.height.toInt()) }
+            drawIntoCanvas { sp.draw(it.nativeCanvas, size.width.toInt(), size.height.toInt()) }
         }
     }
 
@@ -257,7 +280,7 @@ class MainActivity : ComponentActivity() {
 
     /** ChatView: conversación con el personaje activo por la API configurada. */
     @Composable
-    private fun androidx.compose.foundation.layout.ColumnScope.ChatTab() {
+    private fun androidx.compose.foundation.layout.ColumnScope.ChatTab(tick: androidx.compose.runtime.MutableLongState) {
         var text by remember { mutableStateOf("") }
         var busy by remember { mutableStateOf(false) }
         var job by remember { mutableStateOf<Job?>(null) }
@@ -276,6 +299,7 @@ class MainActivity : ComponentActivity() {
             sent = imgs
             imgs = emptyList()
             val name = charName()
+            val desc = charDesc()
             val ctx = chat.takeLast(10).joinToString("\n") { (m, t) -> (if (m) "Tú: " else "$name: ") + t }
             chat.add(true to msg + if (sent.isEmpty()) "" else "\n📎 ${sent.size} imagen(es)")
             play = Play("talking", 120_000)
@@ -283,7 +307,8 @@ class MainActivity : ComponentActivity() {
                 val reply = withContext(Dispatchers.IO) {
                     try {
                         Ai(getSharedPreferences("ai", MODE_PRIVATE)).chat(if (ctx.isEmpty()) msg else "$ctx\nTú: $msg",
-                            "Eres $name, una mascota tierna. Responde siempre en español, máximo 3 frases.", sent.map { jpeg(it) })
+                            "Eres $name, una mascota${if (desc.isEmpty()) "" else " ($desc)"}. Tierna, breve, responde siempre en español, máximo 3 frases. " +
+                                "No pegues código largo.", sent.map { jpeg(it) })  // como chat.PERSONA
                     } catch (e: Exception) {
                         "No pude responder (${e.message})"
                     }
@@ -298,11 +323,18 @@ class MainActivity : ComponentActivity() {
             r.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { send(it) }
         }
         LaunchedEffect(chat.size) { if (chat.isNotEmpty()) list.animateScrollToItem(chat.size - 1) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Pet(tick, Modifier.size(84.dp))  // pequeña: en el teléfono la conversación necesita la pantalla
+            Text(remember(charVersion) { charName() }, Modifier.weight(1f).padding(start = 8.dp), fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            Pill("＋ Nuevo chat") { if (!busy) { chat.clear(); text = ""; imgs = emptyList() } }
+        }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), list, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (chat.isEmpty()) item { Text("Dile algo a ${charName()} 👋", color = DIM) }
             items(chat) { (mine, t) ->
                 Box(Modifier.fillMaxWidth(), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
-                    Text(t, Modifier.clip(RoundedCornerShape(14.dp)).background(if (mine) SELECTED else PANEL).padding(horizontal = 12.dp, vertical = 8.dp))
+                    SelectionContainer {  // mantener pulsado un mensaje lo selecciona para copiarlo (uno por mensaje: alrededor de la lista tapaba la entrada)
+                        Text(t, Modifier.clip(RoundedCornerShape(14.dp)).background(if (mine) SELECTED else PANEL).padding(horizontal = 12.dp, vertical = 8.dp))
+                    }
                 }
             }
         }
@@ -333,9 +365,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** CharactersView: lista de personajes (● = activo); tocar uno lo activa. Importar no quita a los demás. */
+    /** CharactersView: lista de personajes (● = activo); tocar uno lo activa y ⋮ abre sus acciones (animaciones, editar, exportar, eliminar).
+     *  Importar no quita a los demás. */
     @Composable
-    private fun androidx.compose.foundation.layout.ColumnScope.CharsTab() {
+    private fun androidx.compose.foundation.layout.ColumnScope.CharsTab(tick: androidx.compose.runtime.MutableLongState) {
         val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) try {
                 val id = contentResolver.openInputStream(uri)!!.use { importZip(it) }
@@ -344,21 +377,43 @@ class MainActivity : ComponentActivity() {
                 toast("No se pudo importar: ${e.message}")
             }
         }
+        var exporting by remember { mutableStateOf("") }
+        val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+            if (uri != null) try {
+                contentResolver.openOutputStream(uri)!!.use { exportZip(exporting, it) }
+                toast("Exportado: $exporting.zip")
+            } catch (e: Exception) {
+                toast("No se pudo exportar: ${e.message}")
+            }
+        }
         val chars = remember(charVersion) { listChars() }
         val active = remember(charVersion) { dir().name }
         var editing by remember { mutableStateOf<String?>(null) }
         var deleting by remember { mutableStateOf<String?>(null) }
+        var catalog by remember { mutableStateOf<String?>(null) }
+        catalog?.let { id ->
+            BackHandler { catalog = null }
+            return CatalogScreen(id, tick) { catalog = null }
+        }
         H1("Personajes")
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (chars.isEmpty()) Text("No hay personajes. Importa un .zip exportado desde el escritorio.", color = DIM)
             chars.forEach { (id, name) ->
                 val on = id == active
+                var open by remember { mutableStateOf(false) }
                 Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (on) SELECTED else Color.Transparent)
-                    .clickable(enabled = !on) { useChar(id) }.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    .clickable(enabled = !on) { useChar(id) }.padding(start = 14.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(name, Modifier.weight(1f), fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal)
                     Text(if (on) "● activo" else "Usar", color = if (on) ACCENT else DIM, fontSize = 12.sp)
-                    Text("✎", Modifier.clickable { editing = id }.padding(start = 14.dp, top = 4.dp, bottom = 4.dp), color = DIM, fontSize = 18.sp)
-                    Text("🗑", Modifier.clickable { deleting = id }.padding(start = 14.dp, top = 4.dp, bottom = 4.dp), color = DIM, fontSize = 18.sp)
+                    Box {
+                        Text("⋮", Modifier.clickable { open = true }.padding(horizontal = 18.dp, vertical = 8.dp), color = TEXT, fontSize = 20.sp)
+                        DropdownMenu(open, { open = false }, containerColor = RAISED) {
+                            listOf("🎬  Animaciones" to { catalog = id }, "✎  Editar" to { editing = id },
+                                "⇪  Exportar (.zip)" to { exporting = id; saver.launch("$id.zip") }, "🗑  Eliminar" to { deleting = id }).forEach { (t, fn) ->
+                                DropdownMenuItem({ Text(t) }, { open = false; fn() })
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -371,6 +426,88 @@ class MainActivity : ComponentActivity() {
                 confirmButton = { TextButton({ deleteChar(id); deleting = null }) { Text("Eliminar", color = Color(0xFFF07178)) } },
                 dismissButton = { TextButton({ deleting = null }) { Text("Cancelar", color = DIM) } })
         }
+    }
+
+    /** CatalogView: animaciones del personaje (las que tiene y las que le faltan), vista previa, fps y modo al vuelo (como sprites.set_meta),
+     *  probar en la mascota flotante y eliminar (dos toques). */
+    @Composable
+    private fun androidx.compose.foundation.layout.ColumnScope.CatalogScreen(id: String, tick: androidx.compose.runtime.MutableLongState, onBack: () -> Unit) {
+        val f = File(File(charsDir(this@MainActivity), id), "character.json")
+        var ver by remember { mutableStateOf(0) }
+        val j = remember(id, ver) { runCatching { JSONObject(f.readText()) }.getOrDefault(JSONObject()) }
+        val anims = j.optJSONObject("anims") ?: JSONObject()
+        val names = remember(id, ver) { anims.keys().asSequence().sortedBy { Sprite.label(it) }.toList() + Sprite.WANTED.keys.filter { !anims.has(it) } }
+        var sel by remember(id) { mutableStateOf(names.firstOrNull() ?: "") }
+        var arm by remember { mutableStateOf(false) }
+        val a = anims.optJSONObject(sel)
+        val prev = remember { Sprite() }
+        LaunchedEffect(id, ver, sel) { prev.load(f.parentFile!!); if (a != null) prev.start(sel); arm = false }
+
+        fun save(fps: Int, mode: String) {
+            a!!.put("fps", fps.coerceIn(1, 30)).put("loop", mode != "once").put("pingpong", mode == "pingpong")
+            f.writeText(j.toString(1))
+            ver++
+            charVersion++
+            reloadFloat()
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("‹", Modifier.clickable { onBack() }.padding(end = 14.dp), fontSize = 26.sp)
+            H1("Animaciones · ${j.optString("name", id)}")
+        }
+        Card(Modifier.fillMaxWidth().height(170.dp)) {
+            if (a != null) Pet(tick, Modifier.fillMaxSize(), prev)
+            else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Aún no tiene esta animación", color = DIM) }
+        }
+        val w = Sprite.WANTED[sel]
+        Text(Sprite.label(sel), fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+        Text(if (a != null) "${a.optInt("frames")} cuadro${if (a.optInt("frames") != 1) "s" else ""}${if (w != null) " · $w" else ""}"
+            else "${(w ?: "").replaceFirstChar { it.uppercase() }}. Mientras tanto usa «${Sprite.label(Sprite.FALLBACK[sel] ?: "idle")}».", color = DIM, fontSize = 13.sp)
+        if (a != null) {
+            val fps = a.optInt("fps", 8)
+            val mode = if (a.optBoolean("pingpong")) "pingpong" else if (a.optBoolean("loop", true)) "loop" else "once"
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Pill("−", Modifier.width(52.dp)) { save(fps - 1, mode) }
+                Text("$fps fps", Modifier.width(56.dp), fontSize = 14.sp)
+                Pill("+", Modifier.width(52.dp)) { save(fps + 1, mode) }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {  // en el teléfono no caben junto a los fps
+                listOf("loop" to "bucle", "pingpong" to "ida y vuelta", "once" to "una vez").forEach { (m, t) ->
+                    Text(t, Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).background(if (m == mode) SELECTED else RAISED).clickable { save(fps, m) }
+                        .padding(vertical = 10.dp), color = if (m == mode) TEXT else DIM, fontSize = 13.sp, maxLines = 1,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Primary("▶  Probar en la mascota", Modifier.weight(1f)) {
+                    if (!OverlayService.running) return@Primary toast("Activa la mascota flotante (pestaña Cuidar)")
+                    if (id != dir().name) return@Primary toast("Usa primero este personaje")
+                    startService(Intent(this@MainActivity, OverlayService::class.java).setAction(OverlayService.PREVIEW).putExtra("anim", sel))
+                }
+                OutlinedButton({
+                    if (!arm) { arm = true; return@OutlinedButton }  // confirmación en dos toques, como el escritorio
+                    anims.remove(sel)
+                    f.writeText(j.toString(1))
+                    toast("«${Sprite.label(sel)}» eliminada")
+                    ver++
+                    charVersion++
+                    reloadFloat()
+                }, Modifier.height(48.dp), shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, DANGER)) {
+                    Text(if (arm) "¿Seguro?" else "Eliminar", color = DANGER)
+                }
+            }
+        }
+        LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+            items(names) { n ->
+                val have = anims.optJSONObject(n)
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (n == sel) SELECTED else Color.Transparent)
+                    .clickable { sel = n }.padding(horizontal = 14.dp, vertical = 11.dp)) {
+                    Text(Sprite.label(n), Modifier.weight(1f), color = if (have != null) TEXT else DIM)
+                    Text(have?.optInt("frames")?.toString() ?: "—", color = DIM, fontSize = 13.sp)
+                }
+            }
+        }
+        Text("Generar o reemplazar animaciones se hace en el escritorio; luego exporta e importa el .zip.", color = DIM, fontSize = 11.sp)
     }
 
     /** Edita nombre, descripción, identidad y anatomía en character.json (se conservan los demás campos, como sprites.set_profile). */
@@ -413,8 +550,19 @@ class MainActivity : ComponentActivity() {
             Triple("image", "url", "URL base (vacío = OpenAI)"), Triple("image", "key", "Clave"),
             Triple("image", "model", "Modelo (vacío = gpt-image-1)"))
         val values = remember { fields.map { (w, k, _) -> mutableStateOf(ai.p.getString("${w}_$k", "")!!) } }
+        val app = remember { getSharedPreferences("app", MODE_PRIVATE) }
+        var scale by remember { mutableStateOf(app.getFloat("scale", 0.6f)) }
         H1("Ajustes")
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Section("Mascota")  // tamaño de la mascota flotante, como «Tamaño» del escritorio (store "scale", 30–120 %)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Tamaño", Modifier.width(70.dp), color = DIM, fontSize = 13.sp)
+                Slider(scale, { scale = it }, Modifier.weight(1f), valueRange = 0.3f..1.2f,
+                    onValueChangeFinished = { app.edit().putFloat("scale", (scale * 100).toInt() / 100f).apply(); reloadFloat() },
+                    colors = SliderDefaults.colors(thumbColor = ACCENT, activeTrackColor = ACCENT, inactiveTrackColor = RAISED))
+                Text("${(scale * 100).toInt()}%", Modifier.width(48.dp), color = DIM, fontSize = 13.sp)
+            }
+            Spacer(Modifier.height(8.dp))
             fields.forEachIndexed { i, (w, k, hint) ->
                 if (i == 0) Section("Chat por API")
                 if (i == 4) { Spacer(Modifier.height(8.dp)); Section("Imágenes por API") }
@@ -457,7 +605,7 @@ class MainActivity : ComponentActivity() {
         chat.clear()  // otro personaje: chat nuevo
         charVersion++
         toast("Ahora es ${listChars()[id] ?: id}")
-        if (OverlayService.running) startService(Intent(this, OverlayService::class.java).setAction(OverlayService.RELOAD))
+        reloadFloat()
     }
 
     /** Imagen adjunta lista para la API: reducida a 1280 px como máximo y en JPEG, para no mandar fotos enormes. */
@@ -474,7 +622,7 @@ class MainActivity : ComponentActivity() {
         if (!File(charsDir(this), id).deleteRecursively()) return toast("No se pudo eliminar")
         charVersion++
         toast("Eliminado: $name")
-        if (OverlayService.running) startService(Intent(this, OverlayService::class.java).setAction(OverlayService.RELOAD))
+        reloadFloat()
     }
 
     // ---- asistente por voz (VoiceService) ----
@@ -510,6 +658,20 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 2)  // para ver el aviso con el botón «Quitar»
         startForegroundService(Intent(this, OverlayService::class.java))
         floating = true
+    }
+
+    /** Mismo zip que sprites.export_character: <id>/character.json, brief.md, imágenes de referencia y las hojas que usa. */
+    private fun exportZip(id: String, out: java.io.OutputStream) {
+        val d = File(charsDir(this), id)
+        val anims = JSONObject(File(d, "character.json").readText()).optJSONObject("anims") ?: JSONObject()
+        val sheets = anims.keys().asSequence().map { File(anims.getJSONObject(it).getString("sheet")).name }.toSortedSet()
+        ZipOutputStream(out).use { z ->
+            (listOf("character.json", "brief.md", "reference.png", "source.png", "neutral.png") + sheets).map { File(d, it) }.filter { it.isFile }.forEach {
+                z.putNextEntry(ZipEntry("$id/${it.name}"))
+                it.inputStream().use { i -> i.copyTo(z) }
+                z.closeEntry()
+            }
+        }
     }
 
     /** Extrae solo .json/.png/.md y por nombre de archivo (el zip trae <id>/<archivo>): no hay rutas que escapen de la carpeta. */

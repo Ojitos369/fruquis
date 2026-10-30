@@ -126,9 +126,9 @@ class VoiceService : Service() {
     /** «<nombre> detener/parar/detente/para/cancela/cancelar» (o la palabra sola si ya dijo el nombre); «detener» y «detente» valen sin nombre. Como voice.is_stop. */
     private fun isStop(text: String): Boolean {
         val w = norm(text)
-        if (w == listOf("detener") || w == listOf("detente") || (System.currentTimeMillis() < awake && w.size == 1 && w[0] in STOP)) return true
+        if (w == listOf("detener") || w == listOf("detente") || (System.currentTimeMillis() < awake && w.size == 1 && w[0] in STOP_WORDS)) return true
         val (found, rest) = splitWake(text, name)
-        return found && rest in STOP
+        return found && rest in STOP_WORDS
     }
 
     private fun say(t: String) {
@@ -245,7 +245,7 @@ class VoiceService : Service() {
         /** «nuevo chat», «chat nuevo», «limpia el chat»…: cortas, como chatui.is_new_chat. */
         fun isNewChat(t: String): Boolean = norm(t).let { w -> w.size in 1..5 && w.any { it in setOf("chat", "conversacion", "charla") } && w.any { it in NEW_CHAT } }
 
-        private val STOP = setOf("detener", "parar", "detente", "para", "cancela", "cancelar")
+        private val STOP_WORDS = setOf("detener", "parar", "detente", "para", "cancela", "cancelar")
         private val CHANGE = setOf("cambia", "cambiar", "cambiate", "cambiame", "pon", "ponme", "ponte", "activa", "usa", "quiero", "habla", "hablar", "dame")
         private val FILLER = CHANGE + setOf("a", "al", "de", "con", "el", "la", "personaje", "personajes", "mejor", "por", "favor", "ahora", "que", "sea", "otro")
         @Volatile var running = false

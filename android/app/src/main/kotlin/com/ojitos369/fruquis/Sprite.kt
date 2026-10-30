@@ -13,7 +13,9 @@ class Sprite {
     private var dir = File("")
     private var anims: JSONObject? = null
     private var sheet: Bitmap? = null
-    private var sheetName = ""
+    // hojas ya decodificadas: decodificar en cada cambio de animación (al agarrarla, soltarla, aterrizar) trababa el hilo de la
+    // interfaz y la mascota flotante se veía cortada o vacía mientras la jalabas
+    private val sheets = HashMap<String, Bitmap?>()
     private var cw = 192
     private var ch = 208
     private var row = 0
@@ -23,13 +25,19 @@ class Sprite {
     private var t0 = 0L
     var fps = 8
         private set
+    var current = ""
+        private set
 
     val ok get() = anims != null
+
+    /** Animaciones que trae el personaje (sin la de mirada, que no se reproduce sola). */
+    val names: List<String> get() = anims?.keys()?.asSequence()?.filter { it != LOOK }?.sorted()?.toList() ?: emptyList()
 
     fun load(dir: File): Boolean {
         this.dir = dir
         anims = null
-        sheetName = ""
+        sheets.clear()
+        current = ""
         return try {
             val j = JSONObject(File(dir, "character.json").readText())
             j.optJSONArray("cell")?.let { cw = it.getInt(0); ch = it.getInt(1) }
@@ -48,16 +56,14 @@ class Sprite {
             while (!all.has(n) && n in FALLBACK) n = FALLBACK.getValue(n)
             if (!all.has(n)) n = "idle"
             val a = all.getJSONObject(n)
-            val sh = a.getString("sheet")
-            if (sh != sheetName) {
-                sheet = BitmapFactory.decodeFile(File(dir, File(sh).name).path)
-                sheetName = sh
-            }
+            val sh = File(a.getString("sheet")).name
+            sheet = sheets.getOrPut(sh) { BitmapFactory.decodeFile(File(dir, sh).path) }
             row = a.getInt("row")
             frames = maxOf(1, a.getInt("frames"))
             fps = maxOf(1, a.optInt("fps", 8))
             pingpong = a.optBoolean("pingpong")
             loop = a.optBoolean("loop", true)
+            current = n
             t0 = System.currentTimeMillis()
         } catch (e: Exception) {
             sheet = null
@@ -84,11 +90,29 @@ class Sprite {
     }
 
     companion object {
+        const val LOOK = "look"
         // animación de respaldo si el personaje no la trae (igual que sprites.WANTED)
         val FALLBACK = mapOf(
             "eating" to "waving", "cleaning" to "waving", "pampered" to "waving", "talking" to "waving", "listening" to "talking","playing" to "jumping",
             "sleeping" to "waiting", "sitting" to "idle", "dragged" to "waiting", "falling" to "jumping", "climbing" to "running-right", "clinging" to "idle",
-            "waving" to "idle", "jumping" to "idle", "waiting" to "idle",
+            "poking" to "jumping", "reading" to "review", "typing" to "review", "waving" to "idle", "jumping" to "idle", "waiting" to "idle",
         )
+        /** Animaciones que se esperan de un personaje y qué hacen (sprites.WANTED, en el mismo orden). */
+        val WANTED = linkedMapOf(
+            "idle" to "de pie, respirando", "running-right" to "camina/corre a la derecha", "running-left" to "camina/corre a la izquierda",
+            "jumping" to "salto de alegría / salto a una ventana", "waving" to "saluda", "failed" to "triste/error", "waiting" to "espera",
+            "review" to "pensando/trabajando", "talking" to "habla (mensajes y chat)", "sleeping" to "duerme", "sitting" to "sentada en un borde",
+            "dragged" to "colgada mientras la arrastras", "falling" to "cae", "climbing" to "trepa paredes (se dibuja de pie, la app la rota)",
+            "clinging" to "agarrada quieta a una pared o al techo (se dibuja de pie, la app la rota)", "poking" to "pica algo",
+            "reading" to "lee / mira con atención (cuando analiza tu ventana)", "typing" to "teclea", "pampered" to "la están mimando (feliz, se deja querer)",
+            "playing" to "juega", "eating" to "come", "cleaning" to "se limpia",
+        )
+        /** Nombre en español para la interfaz (sprites.ES); las claves siguen en inglés. */
+        private val ES = mapOf("idle" to "reposo", "running-right" to "correr derecha", "running-left" to "correr izquierda", "jumping" to "saltar",
+            "waving" to "saludar", "failed" to "fallo", "waiting" to "espera", "review" to "pensar", "talking" to "hablar", "sleeping" to "dormir",
+            "sitting" to "sentada", "dragged" to "arrastrada", "falling" to "caer", "climbing" to "trepar", "clinging" to "agarrada", "poking" to "picar",
+            "reading" to "leer", "typing" to "teclear", "pampered" to "mimada", "playing" to "jugar", "eating" to "comer", "cleaning" to "limpiar", LOOK to "mirada")
+
+        fun label(name: String) = ES[name] ?: name
     }
 }
