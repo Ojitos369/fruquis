@@ -1,132 +1,230 @@
 package com.ojitos369.fruquis
 
-import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Canvas
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.provider.Settings
-import android.text.InputType
-import android.view.Gravity
-import android.view.View
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameMillis
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
 import java.util.zip.ZipInputStream
-import kotlin.concurrent.thread
+
+/** Animación a reproducir; cada instancia es distinta, así que relanza la animación aunque sea la misma. */
+private class Play(val anim: String, val ms: Long)
 
 /** Versión Android de Fruquis: la mascota animada con las mismas hojas de sprites (character.json) y el mismo tamagotchi que el escritorio.
- *  Mantener en paridad con fruquis/care.py (valores de DECAY/FLOOR/ACTIONS) y con el formato de fruquis/sprites.py. */
-class MainActivity : Activity() {
-    private class Action(val label: String, val anim: String, val fx: IntArray)  // fx: hambre, limpieza, diversión, energía
-
-    private val h = Handler(Looper.getMainLooper())
-    private val stats = DoubleArray(4)
-    private val prefs by lazy { getSharedPreferences("care", MODE_PRIVATE) }
-    private lateinit var pet: PetView
-    private lateinit var status: TextView
-    private lateinit var floatBtn: Button
-    private var current = "idle"
-    private var until = 0L
+ *  Mantener en paridad con fruquis/care.py (Care.kt) y con el formato de fruquis/sprites.py (Sprite.kt). La mascota flotante es OverlayService. */
+class MainActivity : ComponentActivity() {
+    private val care by lazy { Care(getSharedPreferences("care", MODE_PRIVATE)) }
+    private val sprite = Sprite()
+    private var charVersion by mutableStateOf(0)  // sube al importar un personaje
+    private var floating by mutableStateOf(false)
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
-        loadCare()
-        fun button(text: String, onClick: () -> Unit) = Button(this).apply { this.text = text; isAllCaps = false; setOnClickListener { onClick() } }
-        fun row(vararg bs: Button) = LinearLayout(this).apply { bs.forEach { addView(it, LinearLayout.LayoutParams(0, -2, 1f)) } }
-        pet = PetView()
-        status = TextView(this).apply { gravity = Gravity.CENTER }
-        floatBtn = button("") { toggleFloat() }
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(24, 48, 24, 24)
-            addView(pet, LinearLayout.LayoutParams(-1, 0, 1f))
-            addView(status)
-            addView(row(*ACTIONS.map { a -> button(a.label) { act(a) } }.toTypedArray()))
-            addView(button("Importar personaje (.zip)") {
-                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE), 1)
-            })
-            addView(floatBtn)
-            addView(row(button("Hablar") { talkDialog() }, button("Ajustes de IA") { aiDialog() }))
-        }
-        setContentView(root)
-        pet.setOnClickListener { play("waving", 2000) }
-        pet.load()
-        tick()
+        enableEdgeToEdge()
+        setContent { FruquisTheme { Surface(Modifier.fillMaxSize()) { Home() } } }
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(req: Int, res: Int, data: Intent?) {
-        if (req != 1 || res != RESULT_OK || data?.data == null) return
-        try {
-            contentResolver.openInputStream(data.data!!)!!.use { importZip(it) }
-            pet.load()
-            toast(if (pet.ok) "Personaje importado" else "El zip no trae character.json")
-        } catch (e: Exception) {
-            toast("No se pudo importar: ${e.message}")
-        }
+    override fun onResume() {
+        super.onResume()
+        care.load()
+        floating = OverlayService.running
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
 
-    // ---- IA por API (Ai.kt / provider.py) ----
-    private fun ai() = Ai(getSharedPreferences("ai", MODE_PRIVATE))
+    private fun dir() = File(filesDir, "character")
 
-    private fun talkDialog() {
-        val t = EditText(this)
-        AlertDialog.Builder(this).setTitle("Dile algo").setView(t).setNegativeButton("Cancelar", null).setPositiveButton("Enviar") { _, _ ->
-            play("talking", 120000)
-            val prompt = t.text.toString()
-            val ai = ai()
-            thread {
-                val r = try {
-                    ai.chat(prompt, "Eres Fruquis, una mascota tierna. Responde siempre en español, máximo 3 frases.")
-                } catch (e: Exception) {
-                    "No pude responder (${e.message})"
-                }
-                runOnUiThread { until = System.currentTimeMillis() + 2000; status.text = r }
-            }
-        }.show()
+    @Composable
+    private fun FruquisTheme(content: @Composable () -> Unit) {
+        val dark = androidx.compose.foundation.isSystemInDarkTheme()
+        val ctx = LocalContext.current
+        MaterialTheme(colorScheme = when {
+            Build.VERSION.SDK_INT >= 31 -> if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
+            dark -> darkColorScheme()
+            else -> lightColorScheme()
+        }, content = content)
     }
 
-    private fun aiDialog() {
-        val ai = ai()
-        val f = listOf(
+    @Composable
+    private fun Home() {
+        var play by remember { mutableStateOf(Play("idle", 0)) }
+        var reply by remember { mutableStateOf("") }
+        var dialog by remember { mutableStateOf("") }  // "", "talk" o "ai"
+        val scope = rememberCoroutineScope()
+        val tick = remember { mutableLongStateOf(0) }
+
+        val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) try {
+                contentResolver.openInputStream(uri)!!.use { importZip(it) }
+                charVersion++
+                toast("Personaje importado")
+            } catch (e: Exception) {
+                toast("No se pudo importar: ${e.message}")
+            }
+        }
+
+        LaunchedEffect(charVersion) { sprite.load(dir()); sprite.start(play.anim) }
+        LaunchedEffect(play) {
+            sprite.start(play.anim)
+            if (play.ms > 0) { delay(play.ms); play = Play("idle", 0) }
+        }
+        LaunchedEffect(Unit) { while (true) { delay(60_000); care.advance(60.0, false) } }
+        LaunchedEffect(Unit) { while (true) withFrameMillis { tick.longValue = it } }  // redibuja la mascota en cada cuadro
+
+        Column(Modifier.safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Canvas(Modifier.weight(1f).fillMaxWidth()) {
+                tick.longValue  // lee el estado para que cada cuadro redibuje
+                drawIntoCanvas { sprite.draw(it.nativeCanvas, size.width.toInt(), size.height.toInt()) }
+            }
+            if (reply.isNotEmpty()) Card(Modifier.fillMaxWidth()) {
+                Text(reply, Modifier.heightIn(max = 140.dp).verticalScroll(rememberScrollState()).padding(12.dp))
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Care.NAMES.forEachIndexed { i, n ->
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("${Care.ICONS[i]} $n", Modifier.padding(end = 4.dp), style = MaterialTheme.typography.labelMedium)
+                        LinearProgressIndicator(progress = { (care.stats[i] / 100).toFloat() }, Modifier.weight(1f))
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Care.ACTIONS.forEach { a ->
+                    FilledTonalButton({ care.act(a); play = Play(a.anim, 3000) }, Modifier.weight(1f), contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+                        Text(a.icon)
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton({ picker.launch(arrayOf("*/*")) }, Modifier.weight(1f)) { Text("Importar .zip") }
+                Button({ toggleFloat() }, Modifier.weight(1f)) { Text(if (floating) "Quitar flotante" else "Flotante") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton({ dialog = "talk" }, Modifier.weight(1f)) { Text("Hablar") }
+                OutlinedButton({ dialog = "ai" }, Modifier.weight(1f)) { Text("Ajustes de IA") }
+            }
+        }
+
+        when (dialog) {
+            "talk" -> TalkDialog({ dialog = "" }) { text ->
+                play = Play("talking", 120_000)
+                scope.launch {
+                    reply = withContext(Dispatchers.IO) {
+                        try {
+                            Ai(getSharedPreferences("ai", MODE_PRIVATE)).chat(text, "Eres Fruquis, una mascota tierna. Responde siempre en español, máximo 3 frases.")
+                        } catch (e: Exception) {
+                            "No pude responder (${e.message})"
+                        }
+                    }
+                    play = Play("talking", 2000)
+                }
+            }
+            "ai" -> AiDialog(Ai(getSharedPreferences("ai", MODE_PRIVATE))) { dialog = "" }
+        }
+    }
+
+    @Composable
+    private fun TalkDialog(onDismiss: () -> Unit, onSend: (String) -> Unit) {
+        var text by remember { mutableStateOf("") }
+        AlertDialog(onDismissRequest = onDismiss, title = { Text("Dile algo") },
+            text = { OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth()) },
+            confirmButton = { TextButton({ onSend(text); onDismiss() }) { Text("Enviar") } },
+            dismissButton = { TextButton(onDismiss) { Text("Cancelar") } })
+    }
+
+    @Composable
+    private fun AiDialog(ai: Ai, onDismiss: () -> Unit) {
+        val fields = listOf(
             Triple("chat", "kind", "Chat: formato (openai | anthropic)"), Triple("chat", "url", "Chat: URL base (vacío = oficial)"),
             Triple("chat", "key", "Chat: clave"), Triple("chat", "model", "Chat: modelo (vacío = predeterminado)"),
             Triple("image", "url", "Imágenes: URL base (vacío = OpenAI)"), Triple("image", "key", "Imágenes: clave"),
             Triple("image", "model", "Imágenes: modelo (vacío = gpt-image-1)"))
-        val fields = f.map { (what, k, hint) ->
-            EditText(this).apply {
-                this.hint = hint
-                setText(ai.p.getString("${what}_$k", ""))
-                setSingleLine()
-                if (k == "key") inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            }
-        }
-        val l = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 16, 32, 0); fields.forEach { addView(it) } }
-        AlertDialog.Builder(this).setTitle("IA por API").setView(l).setNegativeButton("Cancelar", null).setPositiveButton("Guardar") { _, _ ->
-            ai.p.edit().apply { f.forEachIndexed { i, (what, k, _) -> putString("${what}_$k", fields[i].text.toString().trim()) } }.apply()
-        }.show()
+        val values = remember { fields.map { (w, k, _) -> mutableStateOf(ai.p.getString("${w}_$k", "")!!) } }
+        AlertDialog(onDismissRequest = onDismiss, title = { Text("IA por API") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    fields.forEachIndexed { i, (_, k, hint) ->
+                        val secret = k == "key"
+                        OutlinedTextField(values[i].value, { values[i].value = it }, Modifier.fillMaxWidth(), label = { Text(hint) }, singleLine = true,
+                            visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+                            keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else KeyboardType.Text))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton({
+                    ai.p.edit().apply { fields.forEachIndexed { i, (w, k, _) -> putString("${w}_$k", values[i].value.trim()) } }.apply()
+                    onDismiss()
+                }) { Text("Guardar") }
+            },
+            dismissButton = { TextButton(onDismiss) { Text("Cancelar") } })
     }
 
     // ---- mascota flotante (OverlayService) ----
     private fun toggleFloat() {
         if (OverlayService.running) {
             startService(Intent(this, OverlayService::class.java).setAction(OverlayService.STOP))
-            floatBtn.postDelayed(::showFloat, 300)
+            floating = false
             return
         }
-        if (!pet.ok) return toast("Importa primero un personaje")
+        if (!File(dir(), "character.json").exists()) return toast("Importa primero un personaje")
         if (!Settings.canDrawOverlays(this)) {  // permiso especial «Mostrar sobre otras apps»: se concede en una pantalla de Ajustes
             toast("Activa «Mostrar sobre otras apps» para Fruquis y vuelve")
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
@@ -135,12 +233,8 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED)
             requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 2)  // para ver el aviso con el botón «Quitar»
         startForegroundService(Intent(this, OverlayService::class.java))
-        floatBtn.postDelayed(::showFloat, 500)
+        floating = true
     }
-
-    private fun showFloat() { floatBtn.text = if (OverlayService.running) "Quitar mascota flotante" else "Mascota flotante" }
-
-    private fun dir() = File(filesDir, "character")
 
     /** Extrae solo .json/.png/.md y por nombre de archivo (el zip trae <id>/<archivo>): no hay rutas que escapen de la carpeta. */
     private fun importZip(input: InputStream) {
@@ -167,90 +261,5 @@ class MainActivity : Activity() {
         if (!File(tmp, "character.json").exists()) { tmp.deleteRecursively(); throw Exception("falta character.json") }
         dir().deleteRecursively()
         if (!tmp.renameTo(dir())) throw Exception("no se pudo guardar")
-    }
-
-    // ---- tamagotchi (care.py) ----
-    private fun loadCare() {
-        val at = prefs.getLong("at", System.currentTimeMillis())
-        KEYS.forEachIndexed { i, k -> stats[i] = prefs.getFloat(k, 80f).toDouble() }
-        advance((System.currentTimeMillis() - at) / 1000.0, true)
-    }
-
-    private fun advance(seconds: Double, offline: Boolean) {
-        for (i in 0 until 4) {
-            val v = stats[i] - DECAY[i] * seconds / 3600
-            stats[i] = if (offline) maxOf(minOf(stats[i], FLOOR), v) else maxOf(0.0, v)
-        }
-        saveCare()
-    }
-
-    private fun saveCare() = prefs.edit().apply {
-        putLong("at", System.currentTimeMillis())
-        KEYS.forEachIndexed { i, k -> putFloat(k, stats[i].toFloat()) }
-    }.apply()
-
-    private fun act(a: Action) {
-        for (i in 0 until 4) stats[i] = (stats[i] + a.fx[i]).coerceIn(0.0, 100.0)
-        saveCare()
-        play(a.anim, 3000)
-    }
-
-    private fun play(anim: String, ms: Long) {
-        current = anim
-        until = System.currentTimeMillis() + ms
-        pet.start(anim)
-        showStatus()
-    }
-
-    private fun showStatus() {
-        status.text = "🍙 ${stats[0].toInt()}   🫧 ${stats[1].toInt()}   🎾 ${stats[2].toInt()}   ⚡ ${stats[3].toInt()}"
-    }
-
-    private fun tick() {
-        advance(60.0, false)
-        showStatus()
-        h.postDelayed(::tick, 60000)
-    }
-
-    override fun onResume() { super.onResume(); showFloat(); loadCare(); showStatus(); pet.start(current) }
-    override fun onDestroy() { h.removeCallbacksAndMessages(null); super.onDestroy() }
-
-    // ---- sprites (Sprite.kt) ----
-    private inner class PetView : View(this@MainActivity) {
-        private val sp = Sprite()
-        private val step = object : Runnable {
-            override fun run() {
-                if (until > 0 && System.currentTimeMillis() > until && current != "idle") { current = "idle"; until = 0; sp.start("idle") }
-                invalidate()
-                postDelayed(this, 1000L / sp.fps)
-            }
-        }
-        val ok get() = sp.ok
-
-        fun load() {
-            removeCallbacks(step)
-            if (sp.load(dir())) start(current) else invalidate()
-        }
-
-        fun start(name: String) {
-            removeCallbacks(step)
-            if (!sp.ok) return
-            sp.start(name)
-            post(step)
-        }
-
-        override fun onDraw(c: Canvas) = sp.draw(c, width, height)
-    }
-
-    companion object {
-        // hambre, limpieza, diversión, energía -> puntos por hora (igual que care.DECAY)
-        private val KEYS = listOf("hambre", "limpieza", "diversion", "energia")
-        private val DECAY = doubleArrayOf(6.0, 4.0, 5.0, 2.0)
-        private const val FLOOR = 15.0
-        // acción: animación y efectos (igual que care.ACTIONS)
-        private val ACTIONS = listOf(
-            Action("Comer", "eating", intArrayOf(35, -5, 0, 0)), Action("Limpiar", "cleaning", intArrayOf(0, 50, 0, 0)),
-            Action("Jugar", "playing", intArrayOf(-5, 0, 30, -8)), Action("Mimar", "pampered", intArrayOf(0, 0, 25, 3)),
-            Action("Dormir", "sleeping", intArrayOf(-3, 0, 0, 40)))
     }
 }

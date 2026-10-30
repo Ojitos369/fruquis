@@ -17,8 +17,8 @@ Fruquis existe en **dos apps** que deben mantenerse en paridad:
 
 ## Puntos de paridad
 
-- Tamagotchi: `fruquis/care.py` ↔ `MainActivity.kt` (`DECAY`, `FLOOR`, `ACTIONS`).
-- Hojas de sprites y animaciones de respaldo: `fruquis/sprites.py` (`WANTED`) y `fruquis/app.py` ↔ `Sprite.kt` (`FALLBACK`) y `PetView`.
+- Tamagotchi: `fruquis/care.py` ↔ `Care.kt` (`DECAY`, `FLOOR`, `ACTIONS`).
+- Hojas de sprites y animaciones de respaldo: `fruquis/sprites.py` (`WANTED`) y `fruquis/app.py` ↔ `Sprite.kt` (`FALLBACK`) y el `Canvas` de `MainActivity.kt`.
 - Mascota flotante: `fruquis/app.py` (caminar, trepar, lanzar, caer) ↔ `OverlayService.kt` (ventana superpuesta + servicio en primer plano; `Sprite.kt` es el lector de hojas compartido). Estados y animaciones deben coincidir.
 - IA (binario o API, oficial o propia): `fruquis/provider.py` ↔ `Ai.kt` (valores por defecto, rutas y formato de ajustes). En escritorio todo uso de IA pasa por `provider` (`api_text`, `api_image`, `vision`); no llames a `claude`/`codex` directo desde código nuevo. Android solo tiene API (sin binarios).
 - Importar personajes (.zip con `<id>/character.json` + .png/.md): `sprites.py` ↔ `MainActivity.importZip`.
@@ -26,6 +26,6 @@ Fruquis existe en **dos apps** que deben mantenerse en paridad:
 ## Convenciones
 
 - Escritorio: `fruquis/store.py` guarda en `~/.fruquis`; prueba rápida `.venv/bin/python -m fruquis.care` y `tests/`.
-- Android: Kotlin (plugin `org.jetbrains.kotlin.android`, código en `android/app/src/main/kotlin`). Hoy usa solo vistas de la plataforma y ninguna librería; puedes añadir AndroidX, Compose, corrutinas, etc. en `app/build.gradle` cuando aporten algo. `minSdk 26`.
+- Android: Kotlin (plugin `org.jetbrains.kotlin.android`, código en `android/app/src/main/kotlin`). La interfaz principal es Jetpack Compose (Material 3, `MainActivity.kt`); la mascota flotante (`OverlayService.kt`) usa una `View` dentro de una ventana superpuesta a propósito (Compose ahí necesita dueños de ciclo de vida). Más librerías se añaden en `app/build.gradle`. `minSdk 26`.
 - Los personajes no se versionan (`fruquis/characters/`, `*.zip`).
 - Comentarios y textos de UI en español.
