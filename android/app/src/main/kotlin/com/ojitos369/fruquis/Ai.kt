@@ -1,9 +1,12 @@
 package com.ojitos369.fruquis
 
+import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -118,5 +121,55 @@ object Place {
         } catch (_: Exception) {  // sin red o servicio caído: se responde sin ubicación
         }
         return text
+    }
+}
+
+/** Personalidad del personaje y animaciones pedidas por la IA. Paridad con fruquis/chat.py (persona_prompt, split_anim) y fruquis/personality.py. */
+object Persona {
+    private const val ANIM = " Tienes estas animaciones: %s. Si el usuario te pide hacer algo que puedes mostrar con una de ellas (bañarte, comer, dormir, jugar, " +
+        "saludar…) o en tu respuesta dices que lo haces, termina la respuesta con [[anim:NOMBRE]] (una sola, con el nombre exacto). Si ninguna corresponde, no pongas nada."
+    // de locomoción o internas: en el piso se ven mal (chat.NO_ACT)
+    private val NO_ACT = setOf("running-right", "running-left", "dragged", "falling", "climbing", "clinging", "listening", Sprite.LOOK)
+    private val TAG = Regex("""\[\[\s*anim\s*:\s*([\w-]+)\s*]]""")
+    private const val ASK = "describe su PERSONALIDAD para que una IA lo interprete en un chat: temperamento, forma de hablar (tono, muletillas, frases típicas), " +
+        "gustos y manías, y cómo trata a los demás. Responde SOLO con ese texto en español, en segunda persona («Eres…»), máximo 90 palabras, sin fuentes ni enlaces."
+    const val UNKNOWN = "DESCONOCIDO"
+
+    private fun json(c: Context) = runCatching { JSONObject(File(MainActivity.activeDir(c), "character.json").readText()) }.getOrDefault(JSONObject())
+
+    /** Animaciones del personaje activo que puede hacer cuando se lo piden. */
+    fun acts(c: Context): List<String> = json(c).optJSONObject("anims")?.keys()?.asSequence()?.filter { it !in NO_ACT }?.toList() ?: emptyList()
+
+    /** Prompt de sistema del personaje activo. `intro`: qué es (mascota del chat o asistente por voz); `anims` = false con PhoneService (responde JSON). */
+    fun system(c: Context, voice: Boolean = false, anims: Boolean = true): String {
+        val j = json(c)
+        val name = j.optString("name", "Fruquis")
+        val desc = j.optString("description")
+        val p = j.optString("personality").trim()
+        val who = if (p.isEmpty()) (if (voice) "" else "Tierna, ") else "Tu personalidad: $p Responde SIEMPRE con esa personalidad (actitud, forma de hablar, muletillas), "
+        val base = if (voice) "Eres $name, un asistente por voz. ${who}Responde siempre en español, en una o dos frases cortas."
+            else "Eres $name, una mascota${if (desc.isEmpty()) "" else " ($desc)"}. ${who}breve, responde siempre en español, máximo 3 frases. No pegues código largo."
+        val list = if (anims) acts(c) else emptyList()
+        return base + if (list.isEmpty()) "" else ANIM.format(list.joinToString(", ") { "$it (${Sprite.WANTED[it] ?: Sprite.label(it)})" })
+    }
+
+    /** Quita las marcas [[anim:…]]: (texto limpio, animación pedida si el personaje la tiene). */
+    fun split(text: String, have: Collection<String>): Pair<String, String?> =
+        TAG.replace(text, "").trim() to TAG.findAll(text).map { it.groupValues[1] }.lastOrNull { it in have }
+
+    /** Hace la animación en la mascota flotante (si está) y, si es de cuidado (limpiarse, comer…), aplica su efecto en el tamagotchi. */
+    fun act(c: Context, anim: String, care: Care = Care(c.getSharedPreferences("care", Context.MODE_PRIVATE))) {
+        Care.ACTIONS.find { it.anim == anim }?.let { care.act(it) }
+        if (OverlayService.running) c.startService(Intent(c, OverlayService::class.java).setAction(OverlayService.PREVIEW).putExtra("anim", anim).putExtra("ms", 5000L))
+    }
+
+    /** Busca en la red (sin `story`) o deduce de la historia la personalidad. Lanza Exception si la IA no la sabe. Bloqueante. */
+    fun generate(c: Context, name: String, desc: String, story: String): String {
+        val q = if (story.isNotBlank()) "Esta es la historia del personaje «$name» ($desc):\n\n${story.trim()}\n\nA partir de ella $ASK"
+            else "Busca en internet quién es «$name» ($desc): personaje de ficción, persona o mascota conocida. Luego $ASK Si no encuentras a nadie conocido con ese nombre, responde solo: $UNKNOWN"
+        val out = Ai(c.getSharedPreferences("ai", Context.MODE_PRIVATE)).chat(q, "").trim().trim('"')
+        if (out.isEmpty()) throw Exception("La IA no respondió. Inténtalo de nuevo.")
+        if (out.uppercase().startsWith(UNKNOWN)) throw Exception("No encontré a «$name» en la red. Escribe su historia y usa «De la historia».")
+        return out
     }
 }

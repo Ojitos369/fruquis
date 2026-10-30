@@ -682,6 +682,17 @@ class Pet(QWidget):
     def on_reply(self, dest: str, text: str):
         if dest != "chat":  # el chat suspende el estado ocupado cuando termina de escribir la respuesta
             self.clear_busy()
+            self.act_pending()
+
+    def act_pending(self):
+        """Hace la animación que pidió la IA en su respuesta ([[anim:…]]), ya sin el estado ocupado (que la taparía). Si es de cuidado
+        (limpiarse, comer…) también aplica su efecto en el tamagotchi, sin el globo de la acción para no tapar la respuesta."""
+        name, self.pending_anim = getattr(self, "pending_anim", None), None
+        if not name:
+            return
+        if action := next((a for a, n in DO_ANIM.items() if n == name), None):
+            self.care.act(action)
+        self.preview(name, 5)
 
     def preview(self, name: str, secs: float | None = None):
         """Reproduce una animación del personaje un rato (menú Animación y catálogo)."""
@@ -752,7 +763,7 @@ class Pet(QWidget):
     def ask_async(self, prompt: str, dest: str, **opts):
         """Pregunta en un hilo; el resultado vuelve por bridge.reply. Solo el chat (dest='chat') puede ejecutar comandos, si el usuario lo permite."""
         opts.setdefault("tools", False)
-        opts.setdefault("persona", (self.char.name, self.char.description))
+        opts.setdefault("persona", (self.char.name, self.char.description, self.char.personality, list(self.have)))
         opts.setdefault("on_phase", self.bridge.phase.emit)
         self.set_busy("thinking")
         def run():
@@ -761,6 +772,7 @@ class Pet(QWidget):
             except Exception as e:  # noqa: BLE001 - antes se perdía en silencio (la app no tiene consola) y el chat se quedaba esperando
                 log("error", donde="chat.ask", detalle=traceback.format_exc()[-1200:])
                 out = f"No pude responder ({e})"
+            out, self.pending_anim = chat.split_anim(out, self.have)
             self.bridge.reply.emit(dest, out)
         threading.Thread(target=run, daemon=True).start()
 

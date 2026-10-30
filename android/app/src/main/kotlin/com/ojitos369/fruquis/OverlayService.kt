@@ -106,9 +106,9 @@ class OverlayService : Service() {
             resize()
             return START_NOT_STICKY
         }
-        if (i?.action == PREVIEW && view != null) {  // «Probar en la mascota» del catálogo: la reproduce un rato, de pie en el piso
+        if (i?.action == PREVIEW && view != null) {  // «Probar en la mascota» del catálogo o animación pedida en el chat: la reproduce un rato, de pie en el piso
             closeMenu()
-            preview(i.getStringExtra("anim") ?: "idle")
+            preview(i.getStringExtra("anim") ?: "idle", i.getLongExtra("ms", 3000))
             return START_NOT_STICKY
         }
         try {
@@ -180,10 +180,10 @@ class OverlayService : Service() {
         view?.let { wm.updateViewLayout(it, lp) }
     }
 
-    private fun preview(name: String) {
+    private fun preview(name: String, ms: Long = 3000) {
         y = floor()
         anim = name
-        setState(IDLE, 3000)
+        setState(IDLE, ms)
     }
 
     private fun screen() = metrics ?: DisplayMetrics().also { wm.defaultDisplay.getRealMetrics(it); metrics = it }

@@ -155,8 +155,6 @@ class MainActivity : ComponentActivity() {
 
     private fun charName() = listChars()[dir().name] ?: "Fruquis"
 
-    private fun charDesc() = runCatching { JSONObject(File(dir(), "character.json").readText()).optString("description") }.getOrDefault("")
-
     /** Avisa a la mascota flotante que recargue personaje, animaciones o tamaño. */
     private fun reloadFloat() {
         if (OverlayService.running) startService(Intent(this, OverlayService::class.java).setAction(OverlayService.RELOAD))
@@ -298,18 +296,17 @@ class MainActivity : ComponentActivity() {
             sent = imgs
             imgs = emptyList()
             val name = charName()
-            val desc = charDesc()
             val ctx = chat.takeLast(10).joinToString("\n") { (m, t) -> (if (m) "Tú: " else "$name: ") + t }
             chat.add(true to msg + if (sent.isEmpty()) "" else "\n📎 ${sent.size} imagen(es)")
             play = Play("talking", 120_000)
             OverlayService.bubble(this@MainActivity, "💭 Pensando…", 300_000, true)  // globo de pensamiento, como el escritorio
             job = scope.launch {
-                val reply = withContext(Dispatchers.IO) {
+                val raw = withContext(Dispatchers.IO) {
                     try {
-                        val persona = "Eres $name, una mascota${if (desc.isEmpty()) "" else " ($desc)"}. Tierna, breve, responde siempre en español, máximo 3 frases. " +
-                            "No pegues código largo."  // como chat.PERSONA
                         val q = if (ctx.isEmpty()) msg else "$ctx\nTú: $msg"
-                        if (sent.isEmpty() && PhoneService.on(this@MainActivity)) PhoneService.run(this@MainActivity, q, persona, { !isActive }) { a ->  // maneja el teléfono
+                        val phone = sent.isEmpty() && PhoneService.on(this@MainActivity)
+                        val persona = Persona.system(this@MainActivity, anims = !phone)  // como chat.persona_prompt (con PhoneService la IA responde JSON)
+                        if (phone) PhoneService.run(this@MainActivity, q, persona, { !isActive }) { a ->  // maneja el teléfono
                             OverlayService.bubble(this@MainActivity, PhoneService.STEP_TEXT[a] ?: "📱 …", 300_000, true)
                         }
                         else Ai(getSharedPreferences("ai", MODE_PRIVATE)).chat(q, persona, sent.map { jpeg(it) })
@@ -317,14 +314,16 @@ class MainActivity : ComponentActivity() {
                         "No pude responder (${e.message})"
                     }
                 }
-                VoiceLog.add(this@MainActivity, "respuesta", "pedido" to msg, "origen" to "chat", "respuesta" to reply)
+                val (reply, anim) = Persona.split(raw, Persona.acts(this@MainActivity))  // [[anim:…]]: la animación que pidió (bañarse, comer…)
+                VoiceLog.add(this@MainActivity, "respuesta", "pedido" to msg, "origen" to "chat", "respuesta" to reply, "animacion" to (anim ?: ""))
                 chat.add(false to reply)
                 // chat cerrado (otra app al frente u otra pestaña): la respuesta sale en un globo junto a la mascota, como en el escritorio
                 if (!lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED) || tab != "chat")
                     OverlayService.bubble(this@MainActivity, reply).let { shown -> if (!shown) toast(reply) }
                 else OverlayService.bubble(this@MainActivity, "")  // quita el globo de pensamiento
                 busy = false
-                play = Play("talking", 2000)
+                if (anim != null) Persona.act(this@MainActivity, anim, care)
+                play = if (anim != null) Play(anim, 5000) else Play("talking", 2000)
             }
         }
         // botón del micrófono: dicta una orden sin decir el nombre (cuadro de voz del sistema) y la envía
@@ -525,15 +524,39 @@ class MainActivity : ComponentActivity() {
     private fun EditCharDialog(id: String, onClose: () -> Unit) {
         val f = File(File(charsDir(this), id), "character.json")
         val j = remember(id) { JSONObject(f.readText()) }
-        val keys = listOf("name" to "Nombre", "description" to "Descripción", "identity" to "Identidad visual", "anatomy" to "Anatomía y movimiento")
+        val keys = listOf("name" to "Nombre", "description" to "Descripción", "personality" to "Personalidad (chat)", "story" to "Historia (opcional)",
+            "identity" to "Identidad visual", "anatomy" to "Anatomía y movimiento")
         val values = remember(id) { keys.map { (k, _) -> mutableStateOf(j.optString(k, if (k == "name") id else "")) } }
+        val scope = rememberCoroutineScope()
+        var working by remember { mutableStateOf("") }
+        // personalidad buscada en la red o deducida de la historia (como fruquis/personality.py); queda en el campo para revisarla antes de guardar
+        fun persona(fromStory: Boolean) {
+            val story = values[3].value
+            if (fromStory && story.isBlank()) return toast("Escribe primero la historia del personaje")
+            working = if (fromStory) "Leyendo la historia…" else "Buscando en internet…"
+            scope.launch {
+                try {
+                    values[2].value = withContext(Dispatchers.IO) { Persona.generate(this@MainActivity, values[0].value.trim(), values[1].value.trim(), if (fromStory) story else "") }
+                } catch (e: Exception) {
+                    toast(e.message ?: "No pude obtener la personalidad")
+                }
+                working = ""
+            }
+        }
         AlertDialog(onDismissRequest = onClose, containerColor = PANEL,
             title = { Text("Editar personaje") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     keys.forEachIndexed { i, (_, label) ->
                         OutlinedTextField(values[i].value, { values[i].value = it }, Modifier.fillMaxWidth(), label = { Text(label) }, singleLine = i == 0,
-                            shape = RoundedCornerShape(12.dp), colors = fieldColors())
+                            shape = RoundedCornerShape(12.dp), colors = fieldColors(), maxLines = if (i == 3) 6 else Int.MAX_VALUE)
+                        if (i == 3) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (working.isNotEmpty()) Text(working, color = DIM)
+                            else {
+                                Pill("🌐 Buscar en la red", Modifier.weight(1f)) { persona(false) }
+                                Pill("📖 De la historia", Modifier.weight(1f)) { persona(true) }
+                            }
+                        }
                     }
                 }
             },

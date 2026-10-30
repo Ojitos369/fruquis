@@ -1707,6 +1707,21 @@ class ProfileView(View):
         for lab, w in (("NOMBRE", self.cname), ("DESCRIPCIÓN", self.cdesc)):
             lay.addWidget(QLabel(lab, objectName="section"))
             lay.addWidget(w)
+        # personalidad: la usa el chat para contestar como el personaje; se escribe, se busca en la red o se saca de su historia
+        self.persona, self.story = QPlainTextEdit(), QPlainTextEdit()
+        self.persona.setPlaceholderText("Cómo es y cómo habla: temperamento, muletillas, cómo trata al usuario… (vacío = tierna y breve)")
+        self.story.setPlaceholderText("Opcional: pega aquí la historia del personaje y pulsa «Sacar de la historia»")
+        for lab, w, h in (("PERSONALIDAD (CHAT)", self.persona, 70), ("HISTORIA", self.story, 60)):
+            lay.addWidget(QLabel(lab, objectName="section"))
+            w.setFixedHeight(h)
+            lay.addWidget(w)
+        prow = QHBoxLayout()
+        self.web_btn = button("🌐  Buscar personalidad en la red", lambda: self.gen_persona(False))
+        self.story_btn = button("📖  Sacar de la historia", lambda: self.gen_persona(True))
+        prow.addWidget(self.web_btn)
+        prow.addWidget(self.story_btn)
+        prow.addStretch(1)
+        lay.addLayout(prow)
         self.identity, self.anatomy, self.actions = QPlainTextEdit(), QPlainTextEdit(), QPlainTextEdit()
         self.identity.setPlaceholderText("Descripción visual precisa: tipo de criatura, colores, rasgos, accesorios, proporciones…")
         self.anatomy.setPlaceholderText("Partes del cuerpo que sí tiene y las que no; cómo se mueve de forma natural…")
@@ -1728,7 +1743,7 @@ class ProfileView(View):
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
         self.save_t = QTimer(self, singleShot=True, interval=900, timeout=self.save)
-        for w in (self.identity, self.anatomy, self.actions, self.cdesc):
+        for w in (self.identity, self.anatomy, self.actions, self.cdesc, self.persona, self.story):
             w.textChanged.connect(lambda: None if self.loading else self.save_t.start())
         self.cname.textChanged.connect(lambda: None if self.loading else self.save_t.start())
 
@@ -1745,6 +1760,8 @@ class ProfileView(View):
         self.identity.setPlainText(c.identity)
         self.anatomy.setPlainText(c.anatomy)
         self.actions.setPlainText("\n".join(f"{k}: {v}" for k, v in c.actions.items()))
+        self.persona.setPlainText(c.personality)
+        self.story.setPlainText(c.story)
         self.loading = False
         self.ai_btn.setText("✨  Volver a analizar con IA" if c.identity else "✨  Analizar con IA")
 
@@ -1755,7 +1772,7 @@ class ProfileView(View):
             if k.strip() in sprites.WANTED and v.strip():
                 actions[k.strip()] = v.strip()
         sprites.set_profile(self.cid, self.identity.toPlainText().strip(), self.anatomy.toPlainText().strip(), actions,
-                            self.cname.text().strip(), self.cdesc.toPlainText().strip())
+                            self.cname.text().strip(), self.cdesc.toPlainText().strip(), self.persona.toPlainText().strip(), self.story.toPlainText().strip())
         if self.cid == self.pet.char.id:
             self.pet.char = sprites.get(self.cid)  # la mascota activa usa el nombre/descripción nuevos
         self.status.setText("Guardado ✓")
@@ -1773,13 +1790,34 @@ class ProfileView(View):
         self.job.cancel()
         self.analyzed(None, "Análisis cancelado.")
 
+    def gen_persona(self, from_story: bool):
+        """Personalidad buscada en internet (personajes conocidos) o deducida de la historia que escribiste."""
+        from . import personality
+        story = self.story.toPlainText().strip()
+        if from_story and not story:
+            return self.shell.toast("Escribe primero la historia del personaje.", 4000)
+        self.save()
+        cid = self.cid
+        for b in (self.web_btn, self.story_btn):
+            b.setEnabled(False)
+        self.stop_btn.show()
+        self.status.setText("Leyendo la historia…" if from_story else "Buscando al personaje en internet…")
+        self.pet.set_busy("reading" if from_story else "searching")
+        self.job.run(lambda: personality.generate(cid, story if from_story else ""), self.analyzed)
+
     def analyzed(self, r, err):
         self.ai_btn.setEnabled(True)
+        for b in (self.web_btn, self.story_btn):
+            b.setEnabled(True)
         self.stop_btn.hide()
         self.pet.clear_busy()
         if err:
             self.status.setText("")
             return self.shell.toast(err, 6000)
         self.load()
+        if isinstance(r, str):  # personalidad
+            if self.cid == self.pet.char.id:
+                self.pet.char = sprites.get(self.cid)
+            return self.status.setText("Personalidad guardada ✓ — el chat ya contesta así. Puedes corregirla a mano.")
         self.status.setText("Análisis guardado ✓ — se usará en todos los prompts.")
         self.pet.say("¡Ya sé cómo soy! 🐍 Revísalo y corrígelo si hace falta.", 5000)

@@ -128,9 +128,9 @@ def api_image(prompt: str, refs: list = (), timeout: int = 600) -> bytes:
         raise AIError("La API no devolvió ninguna imagen.")
 
 
-def vision(prompt: str, images: list = (), model: str = "haiku", effort: str = "medium", timeout: int = 150) -> str | None:
-    """Pregunta de un solo turno que mira imágenes y devuelve texto: por API si está activada o con `claude -p` (herramienta Read). None si no
-    hay IA disponible o falla. Lo usan el análisis de personajes, la verificación de identidad y la detección de animaciones."""
+def vision(prompt: str, images: list = (), model: str = "haiku", effort: str = "medium", timeout: int = 150, tools: tuple = ("Read",)) -> str | None:
+    """Pregunta de un solo turno que mira imágenes y devuelve texto: por API si está activada o con `claude -p` (herramientas `tools`; por API no hay
+    herramientas). None si no hay IA disponible o falla. Lo usan el análisis de personajes, la personalidad, la verificación de identidad y la detección de animaciones."""
     epoch = _epoch
     if api_on("chat"):
         try:
@@ -142,7 +142,7 @@ def vision(prompt: str, images: list = (), model: str = "haiku", effort: str = "
     if not exe:
         return None
     dirs = sorted({str(Path(p).resolve().parent) for p in images}) or [tempfile.gettempdir()]
-    cmd = [*binaries.argv(exe), "-p", "--model", model, "--effort", effort, "--no-session-persistence", "--tools", "Read", "--allowedTools", "Read"]
+    cmd = [*binaries.argv(exe), "-p", "--model", model, "--effort", effort, "--no-session-persistence", "--tools", ",".join(tools), "--allowedTools", ",".join(tools) or "Read"]
     for d in dirs:
         cmd += ["--add-dir", d]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",

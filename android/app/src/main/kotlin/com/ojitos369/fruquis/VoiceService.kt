@@ -264,12 +264,11 @@ class VoiceService : Service() {
         if (volumeCmd(q)) return
         if (petCmd(q)) return
         if (switchChar(q)) return
-        val who = name
         val mine = ++job  // otra orden o «detener» suben job: la respuesta de esta petición se descarta (la llamada HTTP termina sola)
         OverlayService.bubble(this, "💭 Pensando…", 300_000, true)  // como el globo de pensamiento del escritorio (sin mascota no se avisa)
         Thread {
-            val reply = try {
-                val persona = "Eres $who, un asistente por voz. Responde siempre en español, en una o dos frases cortas."
+            val raw = try {
+                val persona = Persona.system(this, voice = true, anims = !PhoneService.on(this))  // con PhoneService la IA responde JSON
                 if (PhoneService.on(this)) PhoneService.run(this, q, persona, { mine != job }) { a ->
                     if (mine == job) OverlayService.bubble(this, PhoneService.STEP_TEXT[a] ?: "📱 …", 300_000, true)
                 }  // «abre WhatsApp y escríbele a…»
@@ -277,8 +276,9 @@ class VoiceService : Service() {
             } catch (e: Exception) {
                 "No pude responder (${e.message})"
             }
-            VoiceLog.add(this, "respuesta", "pedido" to q, "respuesta" to reply, "descartada" to (mine != job))
-            h.post { if (mine == job) say(reply) }
+            val (reply, anim) = Persona.split(raw, Persona.acts(this))  // [[anim:…]]: la animación que pidió (bañarse, comer…)
+            VoiceLog.add(this, "respuesta", "pedido" to q, "respuesta" to reply, "descartada" to (mine != job), "animacion" to (anim ?: ""))
+            h.post { if (mine == job) { say(reply); anim?.let { Persona.act(this, it) } } }
         }.start()
     }
 

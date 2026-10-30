@@ -3,6 +3,7 @@
 trabajando, escribiendo) y avisarlo a la mascota."""
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -10,10 +11,30 @@ import tempfile
 import threading
 from pathlib import Path
 
-from . import binaries, control, machine, place, provider, store
+from . import binaries, control, machine, place, provider, sprites, store
 
-PERSONA = ("Eres {name}, una mascota de escritorio ({desc}). Tierna, breve, "
+PERSONA = ("Eres {name}, una mascota de escritorio ({desc}). {who}breve, "
            "responde siempre en español, máximo 3 frases. No pegues código largo.")
+WHO = "Tu personalidad: {p} Responde SIEMPRE con esa personalidad (actitud, forma de hablar, muletillas), "
+ANIM = (" Tienes estas animaciones: {list}. Si el usuario te pide hacer algo que puedes mostrar con una de ellas (bañarte, comer, dormir, jugar, "
+        "saludar…) o en tu respuesta dices que lo haces, termina la respuesta con [[anim:NOMBRE]] (una sola, con el nombre exacto). Si ninguna "
+        "corresponde, no pongas nada.")
+NO_ACT = {"running-right", "running-left", "dragged", "falling", "climbing", "clinging", "listening", "look"}  # de locomoción o internas: en el piso se ven mal
+TAG = re.compile(r"\[\[\s*anim\s*:\s*([\w-]+)\s*\]\]")
+
+
+def persona_prompt(persona: tuple) -> str:
+    """(nombre, descripción[, personalidad[, animaciones]]) → prompt de sistema del personaje. Igual que Persona.system en Ai.kt."""
+    name, desc, pers, anims = (*persona, "", ())[:4]
+    acts = [n for n in anims if n not in NO_ACT]
+    return (PERSONA.format(name=name, desc=desc, who=WHO.format(p=pers.strip()) if pers.strip() else "Tierna, ")
+            + (ANIM.format(list=", ".join(f"{n} ({sprites.WANTED[n][1] if n in sprites.WANTED else sprites.label(n)})" for n in acts)) if acts else ""))
+
+
+def split_anim(text: str, have) -> tuple:
+    """Quita las marcas [[anim:…]] de la respuesta: (texto limpio, animación pedida si el personaje la tiene, o None)."""
+    names = [n for n in TAG.findall(text) if n in have and n not in NO_ACT]
+    return TAG.sub("", text).strip(), (names[-1] if names else None)
 SHELL = "PowerShell" if sys.platform == "win32" else "Bash"  # la terminal de cada sistema: PowerShell en Windows, Bash (terminal) en Linux y macOS
 ACT = (" Eres además un asistente completo del equipo del usuario y tienes la herramienta " + SHELL + ": para lo que pida (abrir apps, ajustes o archivos, "
        "buscar, instalar, revisar el sistema, git, scripts…) ejecuta tú los comandos de " + SHELL + " y cuéntalo en una o dos frases, sin decirle que lo haga él. "
@@ -103,7 +124,7 @@ def ask(prompt: str, model: str = "haiku", timeout: int = 120, tools: bool = Fal
         _cancelled = False
         (on_phase or (lambda p: None))("thinking")
         try:
-            out = provider.api_text(prompt, PERSONA.format(name=persona[0], desc=persona[1]) + place.hint(), ([image] if image else []) + list(refs), timeout=timeout)
+            out = provider.api_text(prompt, persona_prompt(persona) + place.hint(), ([image] if image else []) + list(refs), timeout=timeout)
         except provider.AIError as e:
             return f"No pude responder ({e})"
         return "" if _cancelled else (out or "No pude responder (respuesta vacía)")
@@ -112,7 +133,7 @@ def ask(prompt: str, model: str = "haiku", timeout: int = 120, tools: bool = Fal
         return "No encuentro el CLI `claude`. Instálalo o elige su ruta en Ajustes."
     emit = on_phase or (lambda p: None)
     see = bool(image or refs or desktop)
-    system = (PERSONA.format(name=persona[0], desc=persona[1]) + (ACT if (tools or desktop) else "") + (SEE if see else "")
+    system = (persona_prompt(persona) + (ACT if (tools or desktop) else "") + (SEE if see else "")
               + (CTL.format(p=control.prefix()) if desktop else "")
               + (" Escritorios virtuales de Windows: `key win+ctrl+right` / `key win+ctrl+left` (para ir al primero, varias veces a la izquierda y luego avanza; «el segundo "
                  "escritorio» casi siempre es un escritorio virtual, no un monitor). Las órdenes llegan dictadas y pueden venir mal transcritas: si no tienen sentido, "

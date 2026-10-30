@@ -703,4 +703,5 @@ class ChatView(QWidget):
         self.add_actions(self.reveal_row, self.reveal_err)
         self.reveal_lb = None
         self.pet.clear_busy()
+        self.pet.act_pending()
         self.sync()
