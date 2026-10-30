@@ -490,6 +490,8 @@ class Pet(QWidget):
         if not self.on_floor(lambda: self.rest(secs)):
             return
         self.state, self.until, self.mirror = "sleep", time.monotonic() + secs, False
+        # despierta descansada: sin esto, tras 3 min sin tocarla volvía a dormirse en cada pausa y casi no se movía
+        self.active_at = self.until
         self.play("sleeping")
         self.care.s["energia"] = min(100, self.care.s["energia"] + secs)
 

@@ -343,7 +343,8 @@ class OverlayService : Service() {
                 vy += GRAVITY_DP * density * dt
                 x += vx * dt
                 y += vy * dt
-                if ((x <= 0 || x >= w) && y < fl) { side = if (x <= 0) -1 else 1; setState(WALL, 2000L + Random.nextInt(3000)) }  // se pega a la pared
+                // se pega a la pared solo si va hacia ella: al soltarse de la pared (vx = 0) volvía a agarrarse y se quedaba trabada en la esquina
+                if ((x <= 0 && vx < 0 || x >= w && vx > 0) && y < fl) { side = if (x <= 0) -1 else 1; setState(WALL, 2000L + Random.nextInt(3000)) }
                 else if (y >= fl) { y = fl; vx = 0f; vy = 0f; anim = ""; setState(IDLE, 600) }
                 x = x.coerceIn(0f, w)
             }
