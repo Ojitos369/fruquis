@@ -19,6 +19,7 @@ Fruquis existe en **dos apps** que deben mantenerse en paridad:
 
 - Tamagotchi: `fruquis/care.py` ↔ `MainActivity.java` (`DECAY`, `FLOOR`, `ACTIONS`).
 - Hojas de sprites y animaciones de respaldo: `fruquis/sprites.py` (`WANTED`) y `fruquis/app.py` ↔ `PetView` y `FALLBACK` en `MainActivity.java`.
+- Mascota flotante: `fruquis/app.py` (caminar, trepar, lanzar, caer) ↔ `OverlayService.java` (ventana superpuesta + servicio en primer plano; `Sprite.java` es el lector de hojas compartido). Estados y animaciones deben coincidir.
 - IA (binario o API, oficial o propia): `fruquis/provider.py` ↔ `Ai.java` (valores por defecto, rutas y formato de ajustes). En escritorio todo uso de IA pasa por `provider` (`api_text`, `api_image`, `vision`); no llames a `claude`/`codex` directo desde código nuevo. Android solo tiene API (sin binarios).
 - Importar personajes (.zip con `<id>/character.json` + .png/.md): `sprites.py` ↔ `MainActivity.importZip`.
 

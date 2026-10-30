@@ -65,7 +65,7 @@ App con la mascota animada, el tamagotchi y la importación de personajes (.zip)
 gradle -p android assembleDebug     # android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Instálalo (permite "orígenes desconocidos") y usa **Importar personaje (.zip)** con un zip exportado desde el escritorio. El chat con IA, el control del escritorio y la generación de animaciones son solo de escritorio.
+**Mascota flotante:** el botón *Mascota flotante* la pone encima de todas las apps (camina por el piso, trepa los bordes, se agarra y se lanza, toca para saludar). La primera vez Android pide el permiso «Mostrar sobre otras apps»; se quita desde el botón o desde la notificación. Instálalo (permite "orígenes desconocidos") y usa **Importar personaje (.zip)** con un zip exportado desde el escritorio. El chat con IA, el control del escritorio y la generación de animaciones son solo de escritorio.
 
 ---
 

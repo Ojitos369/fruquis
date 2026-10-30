@@ -4,10 +4,10 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
+import android.content.pm.PackageManager;
+import android.os.Build;
+import android.provider.Settings;
 import android.graphics.Canvas;
-import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -21,13 +21,10 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -43,18 +40,11 @@ public class MainActivity extends Activity {
         {"Comer", "eating", "35", "-5", "0", "0"}, {"Limpiar", "cleaning", "0", "50", "0", "0"},
         {"Jugar", "playing", "-5", "0", "30", "-8"}, {"Mimar", "pampered", "0", "0", "25", "3"},
         {"Dormir", "sleeping", "-3", "0", "0", "40"}};
-    // animación de respaldo si el personaje no la trae (igual que sprites.WANTED)
-    static final Map<String, String> FALLBACK = new HashMap<>();
-    static {
-        FALLBACK.put("eating", "waving"); FALLBACK.put("cleaning", "waving"); FALLBACK.put("pampered", "waving");
-        FALLBACK.put("playing", "jumping"); FALLBACK.put("sleeping", "waiting"); FALLBACK.put("waving", "idle");
-        FALLBACK.put("jumping", "idle"); FALLBACK.put("waiting", "idle");
-    }
-
     final Handler h = new Handler(Looper.getMainLooper());
     SharedPreferences prefs;
     double[] stats = new double[4];
     PetView pet;
+    Button floatBtn;
     TextView status;
     String current = "idle";
     long until;
@@ -84,6 +74,9 @@ public class MainActivity extends Activity {
         imp.setText("Importar personaje (.zip)");
         imp.setOnClickListener(v -> startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE), 1));
         root.addView(imp);
+        floatBtn = new Button(this);
+        floatBtn.setOnClickListener(v -> toggleFloat());
+        root.addView(floatBtn);
         LinearLayout ai = new LinearLayout(this);
         Button talk = new Button(this), cfg = new Button(this);
         talk.setText("Hablar");
@@ -152,6 +145,27 @@ public class MainActivity extends Activity {
             ed.apply();
         }).show();
     }
+
+    // ---- mascota flotante (OverlayService) ----
+    void toggleFloat() {
+        if (OverlayService.running) {
+            startService(new Intent(this, OverlayService.class).setAction(OverlayService.STOP));
+            floatBtn.postDelayed(this::showFloat, 300);
+            return;
+        }
+        if (!pet.ok()) { Toast.makeText(this, "Importa primero un personaje", Toast.LENGTH_LONG).show(); return; }
+        if (!Settings.canDrawOverlays(this)) {  // permiso especial «Mostrar sobre otras apps»: se concede en una pantalla de Ajustes
+            Toast.makeText(this, "Activa «Mostrar sobre otras apps» para Fruquis y vuelve", Toast.LENGTH_LONG).show();
+            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 2);  // para ver el aviso con el botón «Quitar»
+        startForegroundService(new Intent(this, OverlayService.class));
+        floatBtn.postDelayed(this::showFloat, 500);
+    }
+
+    void showFloat() { floatBtn.setText(OverlayService.running ? "Quitar mascota flotante" : "Mascota flotante"); }
 
     File dir() { return new File(getFilesDir(), "character"); }
 
@@ -229,75 +243,36 @@ public class MainActivity extends Activity {
         h.postDelayed(this::tick, 60000);
     }
 
-    @Override protected void onResume() { super.onResume(); loadCare(); showStatus(); pet.start(current); }
+    @Override protected void onResume() { super.onResume(); showFloat(); loadCare(); showStatus(); pet.start(current); }
     @Override protected void onDestroy() { h.removeCallbacksAndMessages(null); super.onDestroy(); }
 
-    // ---- sprites (sprites.py / app.py) ----
+    // ---- sprites (Sprite.java) ----
     class PetView extends View {
-        JSONObject anims;
-        Bitmap sheet;
-        String sheetName = "";
-        int cw = 192, ch = 208, row, frames = 1, fps = 8, i;
-        boolean pingpong, loop;
+        final Sprite sp = new Sprite();
         final Runnable step = new Runnable() {
             @Override public void run() {
-                if (anims == null) return;
-                i++;
-                if (until > 0 && System.currentTimeMillis() > until && !current.equals("idle")) { current = "idle"; until = 0; start("idle"); return; }
+                if (until > 0 && System.currentTimeMillis() > until && !current.equals("idle")) { current = "idle"; until = 0; sp.start("idle"); }
                 invalidate();
-                postDelayed(this, 1000 / Math.max(1, fps));
+                postDelayed(this, 1000 / sp.fps);
             }
         };
 
         PetView() { super(MainActivity.this); }
 
-        boolean ok() { return anims != null; }
+        boolean ok() { return sp.ok(); }
 
         void load() {
-            anims = null;
-            try {
-                JSONObject j = new JSONObject(new String(java.nio.file.Files.readAllBytes(new File(dir(), "character.json").toPath())));
-                if (j.has("cell")) { cw = j.getJSONArray("cell").getInt(0); ch = j.getJSONArray("cell").getInt(1); }
-                anims = j.getJSONObject("anims");
-                start(current);
-            } catch (Exception e) {
-                invalidate();
-            }
+            removeCallbacks(step);
+            if (sp.load(dir())) start(current); else invalidate();
         }
 
         void start(String name) {
             removeCallbacks(step);
-            if (anims == null) return;
-            try {
-                String n = name;
-                while (!anims.has(n) && FALLBACK.containsKey(n)) n = FALLBACK.get(n);
-                if (!anims.has(n)) n = "idle";
-                JSONObject a = anims.getJSONObject(n);
-                if (!a.getString("sheet").equals(sheetName)) {
-                    sheet = BitmapFactory.decodeFile(new File(dir(), new File(a.getString("sheet")).getName()).getPath());
-                    sheetName = a.getString("sheet");
-                }
-                row = a.getInt("row"); frames = Math.max(1, a.getInt("frames")); fps = a.optInt("fps", 8);
-                pingpong = a.optBoolean("pingpong"); loop = a.optBoolean("loop", true); i = 0;
-                post(step);
-            } catch (Exception e) {
-                sheet = null;
-                invalidate();
-            }
+            if (!sp.ok()) return;
+            sp.start(name);
+            post(step);
         }
 
-        @Override protected void onDraw(Canvas c) {
-            if (sheet == null) return;
-            int n = pingpong && frames > 1 ? 2 * frames - 2 : frames;
-            int k = loop ? i % n : Math.min(i, n - 1);
-            if (k >= frames) k = n - k;
-            int cols = Math.max(1, sheet.getWidth() / cw);
-            int sx = (k % cols) * cw, sy = (row + k / cols) * ch;
-            if (sx + cw > sheet.getWidth() || sy + ch > sheet.getHeight()) return;
-            float s = Math.min(getWidth() / (float) cw, getHeight() / (float) ch);
-            int w = (int) (cw * s), hh = (int) (ch * s);
-            int x = (getWidth() - w) / 2, y = getHeight() - hh;
-            c.drawBitmap(sheet, new Rect(sx, sy, sx + cw, sy + ch), new Rect(x, y, x + w, y + hh), null);
-        }
+        @Override protected void onDraw(Canvas c) { sp.draw(c, getWidth(), getHeight()); }
     }
 }
