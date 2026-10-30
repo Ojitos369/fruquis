@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.speech.RecognizerIntent
+import android.speech.tts.TextToSpeech
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -126,16 +127,23 @@ class MainActivity : ComponentActivity() {
     private var play by mutableStateOf(Play("idle", 0))
     private val chat = mutableStateListOf<Pair<Boolean, String>>()  // (es del usuario, texto)
     private var tab by mutableStateOf("care")  // la mascota flotante abre la app en una pestaña (extra "tab")
+    private var tts: TextToSpeech? = null  // respuestas del chat en voz alta (Speech en VoiceService.kt)
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         enableEdgeToEdge()
+        tts = TextToSpeech(this) {}  // arranca ya: el motor tarda en estar listo
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = ACCENT, onPrimary = Color.White, background = BG, surface = BG,
                 onBackground = TEXT, onSurface = TEXT, surfaceVariant = RAISED, onSurfaceVariant = DIM, outline = LINE,
                 secondaryContainer = SELECTED, error = DANGER)) { Home() }
         }
         intent?.getStringExtra("tab")?.let { tab = it }
+    }
+
+    override fun onDestroy() {
+        tts?.shutdown()
+        super.onDestroy()
     }
 
     override fun onNewIntent(i: Intent) {
@@ -317,6 +325,7 @@ class MainActivity : ComponentActivity() {
                 val (reply, anim) = Persona.split(raw, Persona.acts(this@MainActivity))  // [[anim:…]]: la animación que pidió (bañarse, comer…)
                 VoiceLog.add(this@MainActivity, "respuesta", "pedido" to msg, "origen" to "chat", "respuesta" to reply, "animacion" to (anim ?: ""))
                 chat.add(false to reply)
+                if (!reply.startsWith("No pude responder")) Speech.say(this@MainActivity, tts, reply)
                 // chat cerrado (otra app al frente u otra pestaña): la respuesta sale en un globo junto a la mascota, como en el escritorio
                 if (!lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED) || tab != "chat")
                     OverlayService.bubble(this@MainActivity, reply).let { shown -> if (!shown) toast(reply) }
@@ -527,6 +536,7 @@ class MainActivity : ComponentActivity() {
         val keys = listOf("name" to "Nombre", "description" to "Descripción", "personality" to "Personalidad (chat)", "story" to "Historia (opcional)",
             "identity" to "Identidad visual", "anatomy" to "Anatomía y movimiento")
         val values = remember(id) { keys.map { (k, _) -> mutableStateOf(j.optString(k, if (k == "name") id else "")) } }
+        var gender by remember(id) { mutableStateOf(j.optString("gender")) }  // voz con la que responde (Speech)
         val scope = rememberCoroutineScope()
         var working by remember { mutableStateOf("") }
         // personalidad buscada en la red o deducida de la historia (como fruquis/personality.py); queda en el campo para revisarla antes de guardar
@@ -547,6 +557,11 @@ class MainActivity : ComponentActivity() {
             title = { Text("Editar personaje") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Género (voz)", color = DIM, fontSize = 13.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for ((k, label) in listOf("" to "Sin definir", "masculino" to "Masculino", "femenino" to "Femenino"))
+                            Pill(if (gender == k) "✓ $label" else label, Modifier.weight(1f)) { gender = k }
+                    }
                     keys.forEachIndexed { i, (_, label) ->
                         OutlinedTextField(values[i].value, { values[i].value = it }, Modifier.fillMaxWidth(), label = { Text(label) }, singleLine = i == 0,
                             shape = RoundedCornerShape(12.dp), colors = fieldColors(), maxLines = if (i == 3) 6 else Int.MAX_VALUE)
@@ -565,6 +580,7 @@ class MainActivity : ComponentActivity() {
                     val name = values[0].value.trim()
                     if (name.isEmpty()) return@TextButton toast("El nombre no puede estar vacío")
                     keys.forEachIndexed { i, (k, _) -> j.put(k, values[i].value.trim()) }
+                    j.put("gender", gender)
                     f.writeText(j.toString(1))
                     charVersion++
                     onClose()
@@ -612,6 +628,12 @@ class MainActivity : ComponentActivity() {
                 requestPermissions(arrayOf("android.permission.RECORD_AUDIO"), 3)
             toast("Elige Fruquis en «App de asistente digital»")
             startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
+        }
+        var speak by remember { mutableStateOf(Speech.on(this@MainActivity)) }
+        Pill(if (speak) "🔊 Responde con voz: sí" else "🔇 Responde con voz: no", Modifier.fillMaxWidth()) {  // como «Responder también con voz» del escritorio
+            speak = !speak
+            app.edit().putBoolean("speak", speak).apply()
+            if (!speak) tts?.stop()
         }
         var control by remember { mutableStateOf(app.getBoolean("control", false)) }
         Pill(if (control) "📱 Controla el teléfono: sí" else "📱 Controlar el teléfono", Modifier.fillMaxWidth()) {  // como «Controlar» del escritorio

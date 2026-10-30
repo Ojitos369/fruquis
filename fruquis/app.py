@@ -15,7 +15,7 @@ from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, Qt, QTimer, 
 from PySide6.QtGui import QAction, QColor, QCursor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QTransform
 from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMenu, QMessageBox, QPushButton, QWidget
 
-from . import chat, machine, sprites, store, theme, winctx
+from . import chat, machine, speech, sprites, store, theme, winctx
 from .care import ACTIONS, Care
 from .voice import log
 
@@ -910,7 +910,8 @@ def run(scale: float | None = None):
     voice.heard.connect(on_heard)
     voice.unsure.connect(lambda t: pet.say(f"No te entendí bien: «{t}». ¿Lo repites?", 6000))
 
-    def on_stop():  # «detener»: corta la petición en curso (la respuesta que se está escribiendo se muestra completa)
+    def on_stop():  # «detener»: corta la petición en curso (la respuesta que se está escribiendo se muestra completa) y calla la voz
+        speech.stop()
         chat_view = shell.views["chat"]
         if chat_view.busy():
             chat_view.stop()

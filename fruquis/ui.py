@@ -8,7 +8,7 @@ from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider, QSpinBox, QVBoxLayout, QWidget)
 
-from . import binaries, provider, sprites, store
+from . import binaries, provider, speech, sprites, store
 from .voice import MODELS
 from .care import ACTIONS
 from .chatui import avatar, copy_text, pick_images
@@ -1182,6 +1182,10 @@ class SettingsView(View):
         lay.addWidget(self.vlevel)
         lay.addWidget(self.vheard)
         row = QHBoxLayout()
+        self.speak = QCheckBox("Responder también con voz (masculina o femenina según el género del personaje)")
+        self.speak.setChecked(bool(store.get("speak", True)))
+        self.speak.toggled.connect(lambda on: (store.put("speak", bool(on)), on or speech.stop()))
+        lay.addWidget(self.speak)
         self.vq = QComboBox()
         for label, key in (("Precisa · small (~480 MB, recomendada)", "small"), ("Rápida · base (~145 MB)", "base")):
             self.vq.addItem(label, key)
@@ -1387,7 +1391,7 @@ class SettingsView(View):
                                 "see": self.see.isChecked(), "control": self.ctl.isChecked()})
 
     def reset(self):
-        for key in ("bin_claude", "bin_codex", "ai", "scale", "prompt_bg", "chat_opts", "parallel", "verify_identity", "ai_clean"):
+        for key in ("bin_claude", "bin_codex", "ai", "scale", "prompt_bg", "chat_opts", "parallel", "verify_identity", "ai_clean", "speak"):
             store.put(key, None)
         self.pet.set_scale(0.6)
         self.enter()
@@ -1704,7 +1708,10 @@ class ProfileView(View):
         self.cname.setPlaceholderText("Nombre del personaje")
         self.cdesc.setPlaceholderText("Descripción breve")
         self.cdesc.setFixedHeight(60)
-        for lab, w in (("NOMBRE", self.cname), ("DESCRIPCIÓN", self.cdesc)):
+        self.gender = QComboBox()  # voz con la que responde (speech.py)
+        for label, key in (("Sin definir (voz del sistema)", ""), ("Masculino", "masculino"), ("Femenino", "femenino")):
+            self.gender.addItem(label, key)
+        for lab, w in (("NOMBRE", self.cname), ("DESCRIPCIÓN", self.cdesc), ("GÉNERO (VOZ)", self.gender)):
             lay.addWidget(QLabel(lab, objectName="section"))
             lay.addWidget(w)
         # personalidad: la usa el chat para contestar como el personaje; se escribe, se busca en la red o se saca de su historia
@@ -1746,6 +1753,7 @@ class ProfileView(View):
         for w in (self.identity, self.anatomy, self.actions, self.cdesc, self.persona, self.story):
             w.textChanged.connect(lambda: None if self.loading else self.save_t.start())
         self.cname.textChanged.connect(lambda: None if self.loading else self.save_t.start())
+        self.gender.currentIndexChanged.connect(lambda _: None if self.loading else self.save_t.start())
 
     def enter(self, cid="", **kw):
         self.cid = cid or self.cid
@@ -1762,6 +1770,7 @@ class ProfileView(View):
         self.actions.setPlainText("\n".join(f"{k}: {v}" for k, v in c.actions.items()))
         self.persona.setPlainText(c.personality)
         self.story.setPlainText(c.story)
+        self.gender.setCurrentIndex(max(0, self.gender.findData(c.gender)))
         self.loading = False
         self.ai_btn.setText("✨  Volver a analizar con IA" if c.identity else "✨  Analizar con IA")
 
@@ -1772,7 +1781,8 @@ class ProfileView(View):
             if k.strip() in sprites.WANTED and v.strip():
                 actions[k.strip()] = v.strip()
         sprites.set_profile(self.cid, self.identity.toPlainText().strip(), self.anatomy.toPlainText().strip(), actions,
-                            self.cname.text().strip(), self.cdesc.toPlainText().strip(), self.persona.toPlainText().strip(), self.story.toPlainText().strip())
+                            self.cname.text().strip(), self.cdesc.toPlainText().strip(), self.persona.toPlainText().strip(), self.story.toPlainText().strip(),
+                            self.gender.currentData())
         if self.cid == self.pet.char.id:
             self.pet.char = sprites.get(self.cid)  # la mascota activa usa el nombre/descripción nuevos
         self.status.setText("Guardado ✓")

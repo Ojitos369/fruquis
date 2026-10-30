@@ -20,7 +20,7 @@ from queue import Empty, Queue
 
 from PySide6.QtCore import QObject, Signal
 
-from . import deps, machine, store
+from . import deps, machine, speech, store
 
 MODEL_URL = "https://huggingface.co/Systran/faster-whisper-{}/resolve/main/"
 MODELS = {"base": 145_000_000, "small": 483_000_000}  # tamaño de model.bin: «small» entiende bastante mejor el español
@@ -363,6 +363,8 @@ class Voice(QObject):
                 if is_stop(text, name, now < awake or busy):  # con una petición en curso basta «cancela» o «para»
                     awake, dec = 0.0, "alto"
                     self.stop.emit()
+                elif speech.speaking():  # es su propia respuesta en voz alta (solo «detener» la interrumpe)
+                    dec = "propia_voz"
                 elif self.once:  # botón del micrófono: la frase es la orden, sin nombre
                     if sure:
                         awake, dec, cmd, self.once = 0.0, "orden_boton", text, False

@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor, QKeySequence, QPainter, QPainterPath, QPixmap,
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea,
                                QVBoxLayout, QWidget, QFileDialog)
 
-from . import chat, control, sprites, store
+from . import chat, control, speech, sprites, store
 from .app import clip
 from .voice import _norm, _phon, log
 
@@ -310,6 +310,7 @@ class ChatView(QWidget):
         v = self.pet.voice
         if v.once:
             return v.cancel_once()
+        speech.stop()  # que no se dicte su propia voz
         self.mic_btn.setText("⏳")  # preparando el micrófono (la primera vez carga el modelo)
         self.mic_t.start(60000)
         v.listen_once()
@@ -454,6 +455,7 @@ class ChatView(QWidget):
             self.send()
 
     def stop(self):
+        speech.stop()
         if self.reveal_lb is not None:  # ya está escribiendo: muestra todo de golpe
             self.finish_reveal()
         elif self.waiting:
@@ -666,6 +668,7 @@ class ChatView(QWidget):
         self.pet.until = time.monotonic() + 0.5
         if dest == "bubble":
             self.pet.say(text, 12000)
+            speech.say(text, self.pet.char.gender)
             if self.isVisible():
                 self.add(text, False)
         elif dest == "chat":
@@ -683,6 +686,7 @@ class ChatView(QWidget):
             self.hist.append(f"{self.pet.char.name}: {text}")
             if not err:
                 self.record(False, text)
+                speech.say(text, self.pet.char.gender)
             self.pet.say(clip(text), 8000)
             self.rev_t.start()
             self.sync()

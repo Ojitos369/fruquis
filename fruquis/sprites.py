@@ -70,6 +70,7 @@ class Character:
     actions: dict = field(default_factory=dict)  # animación -> descripción del movimiento adaptada a su anatomía
     personality: str = ""  # cómo es y cómo habla (la usa el chat); se escribe a mano, se busca en la red o se saca de `story`
     story: str = ""        # historia del personaje dada por el usuario, de la que se deduce la personalidad
+    gender: str = ""       # "masculino" o "femenino": voz con la que responde (speech.py); vacío = voz del sistema
 
     @property
     def source(self):
@@ -98,7 +99,7 @@ def _load(d: Path) -> Character | None:
     anims = {n: {**a, "sheet": d / a["sheet"]} for n, a in j["anims"].items()}
     return Character(d.name, j.get("name", d.name), j.get("description", ""), tuple(j.get("cell", DEFAULT_CELL)), anims, d,
                      j.get("identity", ""), j.get("anatomy", ""), j.get("actions", {}),
-                     j.get("personality", ""), j.get("story", ""))
+                     j.get("personality", ""), j.get("story", ""), j.get("gender", ""))
 
 
 def list_all() -> dict:
@@ -147,15 +148,15 @@ def _save(d: Path, name, description, cell, anims):
     store.write_text(d / "character.json", json.dumps(j, indent=1, ensure_ascii=False))
 
 
-def set_profile(cid: str, identity=None, anatomy=None, actions=None, name=None, description=None, personality=None, story=None):
-    """Guarda nombre, descripción, identidad visual, anatomía, acciones adaptadas, personalidad e historia del personaje (lo que no se pasa se conserva)."""
+def set_profile(cid: str, identity=None, anatomy=None, actions=None, name=None, description=None, personality=None, story=None, gender=None):
+    """Guarda nombre, descripción, identidad visual, anatomía, acciones adaptadas, personalidad, historia y género del personaje (lo que no se pasa se conserva)."""
     d = writable_dir(cid)
     c = get(cid)
     _save(d, name or c.name, c.description if description is None else description, c.cell, c.anims)
     if description is not None:
         store.write_text(d / "brief.md", description.strip() + "\n")  # `brief` lee este archivo antes que la descripción
     j = json.loads(store.read_text(d / "character.json"))
-    for k, v in (("identity", identity), ("anatomy", anatomy), ("actions", actions), ("personality", personality), ("story", story)):
+    for k, v in (("identity", identity), ("anatomy", anatomy), ("actions", actions), ("personality", personality), ("story", story), ("gender", gender)):
         if v is not None:
             j[k] = v
     store.write_text(d / "character.json", json.dumps(j, indent=1, ensure_ascii=False))

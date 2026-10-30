@@ -68,13 +68,12 @@ class VoiceService : Service() {
         }
         if (tts == null) tts = TextToSpeech(this) { st ->
             if (st != TextToSpeech.SUCCESS) { pending = null; if (!on) stopSelf(); return@TextToSpeech }
-            tts?.language = Locale("es")
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {  // orden suelta del botón: al terminar de hablar se cierra
                 override fun onDone(u: String?) { h.post { if (!on && job == done) stopSelf() } }
                 @Deprecated("") override fun onError(u: String?) = onDone(u)
                 override fun onStart(u: String?) {}
             })
-            pending?.let { tts?.speak(it, TextToSpeech.QUEUE_FLUSH, null, "fruquis") }
+            pending?.let { if (!Speech.say(this, tts, it) && !on && job == done) stopSelf() }
             pending = null
         }
         when (i?.action) {
@@ -176,7 +175,8 @@ class VoiceService : Service() {
     private fun say(t: String) {
         note(t)
         done = job
-        if (tts?.speak(t, TextToSpeech.QUEUE_FLUSH, null, "fruquis") != TextToSpeech.SUCCESS) pending = t  // aún iniciando: lo dice al estar listo
+        if (!Speech.on(this) || Speech.clean(t).isEmpty()) { if (!on) stopSelf(); return }  // voz apagada o nada que decir: solo el globo; la orden suelta termina aquí
+        if (!Speech.say(this, tts, t)) pending = t  // aún iniciando: lo dice al estar listo
     }
 
     /** Globo junto a la mascota flotante (como en el escritorio); sin mascota, un aviso normal. */
@@ -360,5 +360,40 @@ object VoiceLog {
             f.appendText(o.toString() + "\n")
         } catch (_: Exception) {  // el registro nunca debe tumbar al asistente
         }
+    }
+}
+
+/** Respuestas en voz alta con voz masculina o femenina según el género del personaje (`gender` en character.json: "masculino", "femenino" o vacío =
+ *  voz del sistema); se apaga con «Responder con voz» (prefs "app" → speak). Paridad con fruquis/speech.py. Lo usan VoiceService y el chat. */
+object Speech {
+    fun on(c: Context) = c.getSharedPreferences("app", Context.MODE_PRIVATE).getBoolean("speak", true)
+
+    fun gender(c: Context) = runCatching { JSONObject(File(MainActivity.activeDir(c), "character.json").readText()).optString("gender") }.getOrDefault("")
+
+    /** Sin emojis ni marcas de markdown: el sintetizador los leería en voz alta (como speech.clean). */
+    fun clean(t: String) = t.replace(Regex("[^\\p{L}\\p{N}\\s.,;:¿?¡!'\"()%_-]"), " ").replace(Regex("\\s+"), " ").trim()
+
+    /** Elige voz en español del género del personaje. Android no expone el género de las voces: se busca en el nombre o las características
+     *  (Samsung y otros lo indican) y, si ninguna lo dice, se cambia el tono. */
+    // ponytail: el tono es una aproximación; con motores que sí etiqueten el género se usa su voz real
+    fun apply(c: Context, t: TextToSpeech) {
+        val g = gender(c)
+        t.language = Locale("es")  // vuelve a la voz predeterminada antes de elegir
+        val tag = when (g) { "masculino" -> "male"; "femenino" -> "female"; else -> null }
+        val v = tag?.let { w ->
+            t.voices?.filter { it.locale.language == "es" }?.firstOrNull { x ->
+                (listOf(x.name) + x.features).any { f -> f.lowercase().let { it.contains(w) && !(w == "male" && it.contains("female")) } }
+            }
+        }
+        if (v != null) t.voice = v
+        t.setPitch(if (v != null || tag == null) 1f else if (tag == "male") 0.75f else 1.25f)
+    }
+
+    /** Dice `text` cortando lo anterior; false si la voz está apagada, no hay texto o el motor no lo aceptó. */
+    fun say(c: Context, t: TextToSpeech?, text: String): Boolean {
+        val s = clean(text)
+        if (t == null || !on(c) || s.isEmpty()) return false
+        apply(c, t)
+        return t.speak(s, TextToSpeech.QUEUE_FLUSH, null, "fruquis") == TextToSpeech.SUCCESS
     }
 }
