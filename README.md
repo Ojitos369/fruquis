@@ -85,7 +85,7 @@ Si el id ya existe se importa con sufijo (`-2`, `-3`…) para no pisar nada. El 
 
 **Consistencia: imagen general y hoja neutral**
 
-- **Imagen general:** una imagen de referencia del personaje que cargas tú (Personajes → *Imagen general y hoja neutral*, o al crear el personaje).
+- **Imagen general:** una imagen de referencia del personaje que cargas tú (Personajes → *Editar personaje*, o al crear el personaje).
 - **Hoja neutral:** 4 vistas (frontal, trasera, lateral izquierda y lateral derecha) respetando todos los detalles. Se **genera con ChatGPT** a partir de la imagen general o la cargas propia. Es solo de referencia: no aparece en el catálogo de animaciones.
 - Al generar cualquier animación se adjunta la hoja neutral; si falta, **se crea primero** automáticamente. El resultado se recorta (fondo `#FF00FF`), se divide en cuadros y pasa por una pantalla de revisión antes de aplicarse.
 - Requiere [Codex CLI](https://github.com/openai/codex) con sesión de ChatGPT (`codex login`). La pantalla lo comprueba.
@@ -93,7 +93,7 @@ Si el id ya existe se importa con sufijo (`-2`, `-3`…) para no pisar nada. El 
 **Agregar animaciones**
 
 - Menú → **Personajes… → Catálogo de animaciones…**: vista previa animada, ajustar fps y modo, **probar en la mascota**, **reemplazar**, **eliminar** o agregar las que faltan.
-- **Agregar hoja de sprites…** acepta cualquier tamaño y distribución. La IA (`haiku`, esfuerzo medio) dice qué animaciones hay y si varias filas son una sola; tú confirmas o corriges.
+- **Reemplazar** (en el catálogo) acepta una hoja de cualquier tamaño y distribución. La IA (`haiku`, esfuerzo medio) dice qué animaciones hay y si varias filas son una sola; tú confirmas o corriges.
 
 <details>
 <summary><b>🎬 Animaciones que conoce</b></summary>

@@ -22,6 +22,8 @@ from .voice import log
 SPEED = 100  # px/s sobre un borde
 GRAVITY = 1800
 KIND_SAY = {"browser": "¡Veo tu navegador!", "terminal": "La terminal… ¿qué ejecutamos?", "editor": "Ahí se escribe código."}
+CALL_SAY = ("¡Hey! 👋", "¡Aquí estoy! 👀", "¿Me extrañaste? 💜", "¡Hola de nuevo!", "¡Psst! ✨")
+VISIT_S = (240, 420)  # cada cuántos segundos (al azar) va a donde está el cursor
 DO_ANIM = {"comer": "eating", "limpiar": "cleaning", "jugar": "playing", "dormir": "sleeping", "mimar": "pampered"}
 
 
@@ -69,6 +71,14 @@ def screen_track(r: QRect) -> Track:
     l, t, rr, b = r.left(), r.top(), r.right() + 1, r.bottom() + 1
     return Track([Seg((l, b), (rr, b), 0, (0, -1), "floor"), Seg((rr, b), (rr, t), -90, (-1, 0), "wall"),
                   Seg((rr, t), (l, t), 180, (0, 1), "ceil"), Seg((l, t), (l, b), 90, (1, 0), "wall")], True)
+
+
+def neighbor(r: QRect, rects: list, side: int) -> QRect | None:
+    """Monitor pegado al borde derecho (side=1) o izquierdo (-1) de `r` con alto en común; None si ese borde es pared.
+    Tolera un hueco: availableGeometry quita los paneles laterales y los bordes ya no se tocan."""
+    gap = lambda o: o.left() - r.right() - 1 if side > 0 else r.left() - 1 - o.right()
+    hits = [o for o in rects if o != r and o.top() <= r.bottom() and o.bottom() >= r.top() and 0 <= gap(o) <= 100]
+    return min(hits, key=gap, default=None)
 
 
 def window_track(w: dict, scr: QRect, d: float) -> Track | None:
@@ -176,12 +186,38 @@ class Pet(QWidget):
         self.hop_off = 0.0  # altura (px) del salto real mientras suena la animación «jumping»
         self.keep_free = store.get("keep_free")  # {"side": derecha|izquierda, "frac": 0.35}: espacio del piso que se le pidió dejar libre
         self.busy_phase, self.think_on, self.followers = None, False, []  # mientras la IA responde la mascota se queda quieta y muestra lo que hace
+        self.windows: list = []  # ventanas a la vista (las lee un hilo: winctx.visible es lento)
+        self.load_screens()
+        QApplication.instance().screenAdded.connect(self.load_screens)
+        QApplication.instance().screenRemoved.connect(self.load_screens)
+        threading.Thread(target=self.scan, daemon=True).start()
         bridge.phase.connect(self.on_phase)
         bridge.reply.connect(self.on_reply)
         self.load_character(char)
         self.wave()
         QTimer(self, interval=33, timeout=self.tick).start()
         QTimer(self, interval=1500, timeout=self.poll).start()
+        QTimer.singleShot(random.randint(*VISIT_S) * 1000, self.visit)
+
+    def load_screens(self, *_):
+        """Monitores donde puede andar (Ajustes → Monitores guarda los apagados por nombre: uno nuevo entra encendido)."""
+        off = store.get("screens_off", [])
+        self.screens = [s for s in QApplication.screens() if s.name() not in off] or QApplication.screens()
+
+    def scr_at(self, x: float, y: float) -> QRect | None:
+        """Área útil del monitor permitido que contiene el punto; None si cae fuera, entre monitores o en uno apagado."""
+        return next((r for s in self.screens if (r := s.availableGeometry()).contains(int(x), int(y))), None)
+
+    def rects(self) -> list:
+        return [s.availableGeometry() for s in self.screens]
+
+    def scan(self):
+        while True:
+            try:
+                self.windows = winctx.visible()
+            except Exception:  # noqa: BLE001 - sin wmctrl/permiso se queda con la ventana activa
+                self.windows = []
+            time.sleep(4)
 
     # ---- personaje ----
     def load_character(self, c: sprites.Character, remember: bool = False):
@@ -192,9 +228,10 @@ class Pet(QWidget):
         self.resize(self.D, self.D)
         self.frames = {n: self._cut(n) for n in self.have}
         self.care = Care(store.HOME / "care" / f"{c.id}.json")
-        self.scr = (QApplication.screenAt(self.pos()) or QApplication.primaryScreen()).availableGeometry()
+        here = self.c.toPoint() if hasattr(self, "c") else QCursor.pos()  # al arrancar aparece en el monitor del cursor
+        self.scr = self.scr_at(here.x(), here.y()) or self.screens[0].availableGeometry()
         self.screen_t, self.win = screen_track(self.scr), None
-        frac = self.c.x() / self.scr.width() if hasattr(self, "c") else store.get("pos", 0.7)  # al cambiar de personaje se queda donde estaba
+        frac = (self.c.x() - self.scr.left()) / self.scr.width() if hasattr(self, "c") else store.get("pos", 0.7)  # al cambiar de personaje se queda donde estaba
         self.attach("screen", 0, max(0.0, min(frac * self.scr.width(), self.scr.width() - self.D)), 1)
         self.anim = ""
         if remember:
@@ -297,17 +334,20 @@ class Pet(QWidget):
 
     def move_to(self, side: str | None = None, mon=None) -> str:
         """Orden de voz: se coloca en el piso a la izquierda/derecha/centro (o arriba, en el techo) y/o en otro monitor ('next', 'prev' o número)."""
-        screens = QApplication.screens()
+        everything, screens = QApplication.screens(), self.screens
         ctr = self.center() if self.attached else self.c
-        cur = QApplication.screenAt(QPoint(int(ctr.x()), int(ctr.y()))) or QApplication.primaryScreen()
-        if mon is not None:
-            i = screens.index(cur) if cur in screens else 0
-            j = (i + 1) % len(screens) if mon == "next" else (i - 1) % len(screens) if mon == "prev" else mon
-            if len(screens) < 2 and mon in ("next", "prev"):
-                return "Solo tengo un monitor 😅"
-            if not 0 <= j < len(screens):
-                return f"Solo veo {len(screens)} monitor(es)"
-            cur = screens[j]
+        cur = QApplication.screenAt(QPoint(int(ctr.x()), int(ctr.y())))
+        cur = cur if cur in screens else screens[0]
+        if mon in ("next", "prev"):
+            if len(screens) < 2:
+                return "Solo tengo un monitor 😅" if len(everything) < 2 else "Solo tengo un monitor activado en Ajustes"
+            cur = screens[(screens.index(cur) + (1 if mon == "next" else -1)) % len(screens)]
+        elif mon is not None:
+            if not 0 <= mon < len(everything):
+                return f"Solo veo {len(everything)} monitor(es)"
+            if everything[mon] not in screens:
+                return f"El monitor {mon + 1} está apagado en Ajustes"
+            cur = everything[mon]
         sc = cur.availableGeometry()
         keep = (ctr.x() - self.scr.left()) / max(1, self.scr.width())  # sin lado: conserva su posición relativa en el monitor nuevo
         frac = {"izquierda": 0.06, "derecha": 0.94, "centro": 0.5, "arriba": keep}.get(side, keep)
@@ -319,7 +359,7 @@ class Pet(QWidget):
             self.attach("screen", 0, min(max(frac * sc.width(), lo), hi), 1)
         self.state, self.until = "once", time.monotonic() + 2
         self.play("waving")
-        n = f" (monitor {screens.index(cur) + 1})" if len(screens) > 1 else ""
+        n = f" (monitor {everything.index(cur) + 1})" if len(everything) > 1 else ""
         return {"izquierda": "Me fui a la izquierda ⬅️", "derecha": "Me fui a la derecha ➡️", "centro": "Aquí al centro 🎯", "arriba": "Me subí al techo ⬆️"}.get(side, "Me cambié de monitor 🖥️") + n
 
     def set_free(self, side: str | None, frac: float = 0.35) -> str:
@@ -349,13 +389,20 @@ class Pet(QWidget):
         if 0 <= self.s <= sg.len:
             return
         forward = self.s > sg.len
+        over = self.s - sg.len if forward else -self.s
+        if tr.closed and i in (0, 2):  # piso o techo: si del otro lado hay un monitor permitido, sigue por ahí en vez de trepar
+            side = (1 if forward else -1) * (1 if i == 0 else -1)  # el piso avanza a la derecha, el techo a la izquierda
+            if o := neighbor(self.scr, self.rects(), side):
+                self.scr, self.screen_t = o, screen_track(o)
+                n = self.screen_t.segs[i].len
+                self.s = min(over, n) if forward else max(0.0, n - over)
+                return
         j = i + (1 if forward else -1)
         if tr.closed:
             j %= len(tr.segs)
         elif not 0 <= j < len(tr.segs):
             self.fall_from()  # el borde se acabó
             return
-        over = self.s - sg.len if forward else -self.s
         nxt = tr.segs[j]
         if random.random() < (0.45 if tr.closed else 0.3):  # a veces da media vuelta en vez de doblar la esquina
             self.s, self.dir = (sg.len - 1 if forward else 1), -self.dir
@@ -469,10 +516,12 @@ class Pet(QWidget):
             self.rest(25)
         else:
             r = random.random()
-            if r < 0.6:
+            if r < 0.55:
                 self.dir = random.choice((-1, 1))
                 self.state, self.until = "walk", now + random.uniform(2, 7)
-            elif r < 0.75:
+            elif r < 0.65 and not self.keep_free:
+                self.roam()
+            elif r < 0.78:
                 self.state, self.until = "once", now + 3
                 self.play("playing")
             else:
@@ -503,7 +552,13 @@ class Pet(QWidget):
             if prev <= sg.a.y() <= foot and sg.a.x() <= x <= sg.b.x():
                 self.attach("win", i, x - sg.a.x(), d)
                 return self.landed()
-        sc = (QApplication.screenAt(QPoint(int(x), int(self.c.y()))) or QApplication.primaryScreen()).availableGeometry()
+        sc = self.scr_at(x, self.c.y())
+        if sc is None:  # entre monitores o sobre uno apagado: sigue cayendo hasta pasar el piso más bajo y va al monitor más cercano
+            rects = self.rects()
+            if foot <= max(r.bottom() for r in rects):
+                return
+            sc = min(rects, key=lambda r: abs(r.center().x() - x))
+            foot = sc.bottom() + 1
         if foot >= sc.bottom() + 1:
             self.scr, self.screen_t = sc, screen_track(sc)
             self.attach("screen", 0, max(0.0, min(x - self.scr.left(), self.scr.width())), d)
@@ -520,13 +575,16 @@ class Pet(QWidget):
     def grab_edge(self, now: float) -> bool:
         """Lanzada contra una pared o el techo de la pantalla: se agarra y sigue trepando en la dirección del tiro."""
         c = self.c
-        sc = (QApplication.screenAt(QPoint(int(c.x()), int(c.y()))) or QApplication.primaryScreen()).availableGeometry()
+        sc = self.scr_at(c.x(), c.y())
+        if sc is None:
+            return False
         l, t, r, b = sc.left(), sc.top(), sc.right() + 1, sc.bottom() + 1
-        if c.y() - self.h / 2 <= t and self.vy < 0:
+        rects = self.rects()
+        if c.y() - self.h / 2 <= t and self.vy < 0 and self.scr_at(c.x(), t - 2) is None:
             i, s, d = 2, r - c.x(), 1 if self.vx <= 0 else -1  # el techo avanza hacia la izquierda: d=+1
-        elif c.x() + self.w / 2 >= r and self.vx > 0:
+        elif c.x() + self.w / 2 >= r and self.vx > 0 and not neighbor(sc, rects, 1):
             i, s, d = 1, b - c.y(), 1 if self.vy <= 0 else -1  # pared derecha: +1 sube
-        elif c.x() - self.w / 2 <= l and self.vx < 0:
+        elif c.x() - self.w / 2 <= l and self.vx < 0 and not neighbor(sc, rects, -1):
             i, s, d = 3, c.y() - t, -1 if self.vy <= 0 else 1  # pared izquierda: -1 sube
         else:
             return False
@@ -549,19 +607,72 @@ class Pet(QWidget):
             self.touch()
         self.vx = 0.0
 
+    def leap(self, to: QPointF, then, win: Track | None = None):
+        """Brinco en arco hasta `to` (más largo y alto si va lejos, p. ej. a otro monitor); al llegar llama `then`."""
+        now, dist = time.monotonic(), math.hypot(to.x() - self.c.x(), to.y() - self.c.y())
+        self.win, self.hop, self.state = win, (now, now + min(1.6, max(0.8, dist / 1400)), QPointF(self.c), QPointF(to), then), "hop"
+
     def hop_step(self, now: float):
-        if self.win is None:  # la ventana dejó de ser la activa en pleno salto
-            return self.fall_from()
-        t0, t1, a, b = self.hop
+        t0, t1, a, b, then = self.hop
         t = min(1.0, (now - t0) / (t1 - t0))
-        self.c = QPointF(a.x() + (b.x() - a.x()) * t, a.y() + (b.y() - a.y()) * t - 90 * 4 * t * (1 - t))
+        arc = max(90.0, 0.15 * math.hypot(b.x() - a.x(), b.y() - a.y()))
+        self.c = QPointF(a.x() + (b.x() - a.x()) * t, a.y() + (b.y() - a.y()) * t - arc * 4 * t * (1 - t))
         self.mirror = False
         self.play("jumping")
         if t >= 1.0:
-            sg = self.win.segs[self.win.top()]
-            self.attach("win", self.win.top(), max(0.0, min(b.x() - sg.a.x(), sg.len)), self.dir)
-            self.state, self.until = "once", now + 2.5
-            self.play("typing" if self.ctx_kind == "terminal" else "poking")
+            then()
+
+    def drop(self, then=None):
+        """Se suelta desde donde está (en el aire) y cae al piso; `then` se hace al aterrizar."""
+        self.vx = self.vy = 0.0
+        self.after_land, self.state, self.win = then, "fall", None
+
+    def on_win(self):
+        """Fin del brinco a una ventana: se para en su borde de arriba (o cae si la ventana ya no está)."""
+        if self.win is None or (i := self.win.top()) is None:
+            return self.drop()
+        sg = self.win.segs[i]
+        self.attach("win", i, max(0.0, min(self.c.x() - sg.a.x(), sg.len)), self.dir)
+        self.state, self.until = "once", time.monotonic() + 2.5
+        self.play("typing" if self.ctx_kind == "terminal" else "poking")
+
+    def hop_win(self, w: dict) -> bool:
+        """Brinca al borde de arriba de la ventana `w` si está en un monitor permitido y cabe."""
+        sc = self.scr_at(w["x"] + w["w"] / 2, w["y"] + 40)
+        tr = window_track(w, sc, self.D) if sc else None
+        if tr is None or tr.top() is None:
+            return False
+        self.scr, self.ctx_kind, self.hop_at = sc, winctx.kind(w), time.monotonic()
+        top = tr.segs[tr.top()]
+        self.leap(QPointF(top.a.x() + random.uniform(0.15, 0.85) * top.len, top.a.y() - self.h / 2), self.on_win, tr)
+        return True
+
+    def roam(self):
+        """Pasea lejos: brinca a una ventana cualquiera a la vista o al piso de otro monitor permitido."""
+        c = self.ctx
+        front = QRect(c["x"], c["y"], c["w"], c["h"]) if c else QRect()
+        wins = [w for w in self.windows if not self.own(w["id"]) and not w["title"].startswith("Fruquis")
+                and (not c or w["id"] == c["id"] or not front.contains(w["x"] + w["w"] // 2, w["y"] + 2))]  # sin las que tapa la activa
+        random.shuffle(wins)
+        # ponytail: no revisa si otra ventana tapa el borde de arriba; con el orden de apilado (_NET_CLIENT_LIST_STACKING) se arreglaría
+        if random.random() < 0.6 and any(self.hop_win(w) for w in wins):
+            return
+        others = [r for r in self.rects() if r != self.scr] or [self.scr]
+        sc = random.choice(others)
+        self.leap(QPointF(sc.left() + random.uniform(0.1, 0.9) * sc.width(), sc.bottom() + 1 - self.h / 2), self.drop)
+
+    def visit(self):
+        """Cada ciertos minutos brinca a donde está el cursor para llamar la atención; luego sigue paseando."""
+        QTimer.singleShot(random.randint(*VISIT_S) * 1000, self.visit)
+        pos = QCursor.pos()
+        if self.busy_phase or self.keep_free or not self.attached or self.state == "sleep" or self.scr_at(pos.x(), pos.y()) is None:
+            return
+        self.leap(QPointF(pos), lambda: self.drop(self.greet))
+
+    def greet(self):
+        self.state, self.until, self.mirror = "once", time.monotonic() + 2.5, False
+        self.play("waving")
+        self.say(random.choice(CALL_SAY), 4000)
 
     # ---- ventana activa ----
     def poll(self):
@@ -570,9 +681,13 @@ class Pet(QWidget):
             return
         self.ctx, kind = c, winctx.kind(c)
         now = time.monotonic()
-        if self.win:  # lo que pisa ya no es la ventana activa: se refresca o se cae
-            if c and c["id"] == self.win.win_id:
-                self.refresh_win(c)
+        if self.attached and self.state != "busy" and self.scr_at(self.c.x(), self.c.y()) is None:
+            self.move_to()  # su monitor se apagó en Ajustes o se desconectó
+        if self.win and self.state != "hop":  # lo que pisa: se refresca con la activa o con la lista; si ya no se ve (cerrada, minimizada) o la tapó la activa, se cae
+            w = c if c and c["id"] == self.win.win_id else next((w for w in self.windows if w["id"] == self.win.win_id), None)
+            covered = c and c is not w and QRect(c["x"], c["y"], c["w"], c["h"]).contains(self.c.toPoint())
+            if w and not covered:
+                self.refresh_win(w)
             elif self.at[0] == "win" and self.attached:
                 self.fall_from()
                 self.win = None
@@ -581,15 +696,7 @@ class Pet(QWidget):
         if c and (self.win is None) and not self.keep_free and self.attached and self.at[0] == "screen" and self.state in ("idle", "walk", "once") \
                 and now - self.hop_at > 8 and (c["id"] != getattr(self, "last_id", None) or kind != self.ctx_kind):
             self.last_id, self.hop_at = c["id"], now
-            sc = (QApplication.screenAt(QPoint(c["x"] + c["w"] // 2, c["y"] + 40)) or QApplication.primaryScreen()).availableGeometry()
-            tr = window_track(c, sc, self.D)
-            if tr is not None and tr.top() is not None:
-                self.win, self.scr, self.ctx_kind = tr, sc, kind
-                top = tr.segs[tr.top()]
-                tx = top.a.x() + random.uniform(0.15, 0.85) * top.len
-                self.hop_at = now
-                self.hop = (now, now + 0.9, QPointF(self.c), QPointF(tx, top.a.y() - self.h / 2))
-                self.state = "hop"
+            if self.hop_win(c):
                 if kind in KIND_SAY and now - self.say_at.get(kind, 0) > 40:
                     self.say_at[kind] = now
                     self.say(KIND_SAY[kind])
@@ -604,7 +711,7 @@ class Pet(QWidget):
             return False
 
     def refresh_win(self, c: dict):
-        tr = window_track(c, self.scr, self.D)
+        tr = window_track(c, self.scr_at(c["x"] + c["w"] / 2, c["y"] + 40) or self.scr, self.D)
         if tr is None or tr.top() is None:
             if self.at[0] == "win" and self.attached:
                 self.fall_from()

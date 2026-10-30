@@ -92,6 +92,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -408,6 +409,7 @@ class MainActivity : ComponentActivity() {
         val active = remember(charVersion) { dir().name }
         var editing by remember { mutableStateOf<String?>(null) }
         var deleting by remember { mutableStateOf<String?>(null) }
+        var creating by remember { mutableStateOf(false) }
         var catalog by remember { mutableStateOf<String?>(null) }
         catalog?.let { id ->
             BackHandler { catalog = null }
@@ -435,7 +437,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        Primary("Importar personaje (.zip)", Modifier.fillMaxWidth()) { picker.launch(arrayOf("*/*")) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Primary("＋ Nuevo", Modifier.weight(1f)) { creating = true }
+            Primary("Importar (.zip)", Modifier.weight(1f)) { picker.launch(arrayOf("*/*")) }
+        }
+        if (creating) NewCharDialog { creating = false }
         editing?.let { EditCharDialog(it) { editing = null } }
         deleting?.let { id ->
             AlertDialog(onDismissRequest = { deleting = null }, containerColor = PANEL,
@@ -529,6 +535,63 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Edita nombre, descripción, identidad y anatomía en character.json (se conservan los demás campos, como sprites.set_profile). */
+    /** NewCharView: nombre, descripción, celda e imagen general opcional. Las animaciones se agregan en escritorio (aquí no hay generador). */
+    @Composable
+    private fun NewCharDialog(onClose: () -> Unit) {
+        var name by remember { mutableStateOf("") }
+        var desc by remember { mutableStateOf("") }
+        var size by remember { mutableStateOf("192x208") }
+        var img by remember { mutableStateOf<Uri?>(null) }
+        val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { if (it != null) img = it }
+        AlertDialog(onDismissRequest = onClose, containerColor = PANEL,
+            title = { Text("Nuevo personaje") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for ((label, value, set) in listOf(Triple("Nombre", name) { v: String -> name = v }, Triple("Descripción visual", desc) { v: String -> desc = v },
+                        Triple("Celda (ancho×alto)", size) { v: String -> size = v }))
+                        OutlinedTextField(value, set, Modifier.fillMaxWidth(), label = { Text(label) }, singleLine = label != "Descripción visual",
+                            shape = RoundedCornerShape(12.dp), colors = fieldColors())
+                    Pill(if (img == null) "Elegir imagen general (opcional)…" else "✓ Imagen general elegida", Modifier.fillMaxWidth()) { pick.launch(arrayOf("image/*")) }
+                }
+            },
+            confirmButton = {
+                TextButton({
+                    if (name.isBlank()) return@TextButton toast("Ponle un nombre")
+                    val cell = size.lowercase().split("x", "×").mapNotNull { it.trim().toIntOrNull() }
+                    if (cell.size != 2) return@TextButton toast("El tamaño debe verse así: 192x208")
+                    try {
+                        val id = createChar(name.trim(), desc.trim(), cell, img)
+                        if (listChars().size == 1) useChar(id) else charVersion++
+                        toast("Creado: ${name.trim()} · sus animaciones se agregan desde el escritorio")
+                        onClose()
+                    } catch (e: Exception) {
+                        toast("No se pudo crear: ${e.message}")
+                    }
+                }) { Text("Crear") }
+            },
+            dismissButton = { TextButton(onClose) { Text("Cancelar", color = DIM) } })
+    }
+
+    /** Como sprites.create + set_source: character.json (se conservan los demás campos si ya existía), brief.md y source.png opcional. */
+    private fun createChar(name: String, desc: String, cell: List<Int>, img: Uri?): String {
+        val id = slug(name)
+        val d = File(charsDir(this), id).apply { mkdirs() }
+        val f = File(d, "character.json")
+        val j = runCatching { JSONObject(f.readText()) }.getOrDefault(JSONObject())
+        j.put("name", name).put("description", desc).put("cell", JSONArray(cell))
+        if (!j.has("anims")) j.put("anims", JSONObject())
+        f.writeText(j.toString(1))
+        File(d, "brief.md").writeText(desc + "\n")
+        img?.let { saveSource(d, it) }
+        return id
+    }
+
+    /** Imagen general del personaje (sprites.set_source): cualquier imagen, guardada como source.png. */
+    private fun saveSource(d: File, u: Uri) {
+        val b = contentResolver.openInputStream(u)!!.use { BitmapFactory.decodeStream(it) } ?: throw Exception("no es una imagen válida")
+        File(d, "source.png").outputStream().use { b.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
+
     @Composable
     private fun EditCharDialog(id: String, onClose: () -> Unit) {
         val f = File(File(charsDir(this), id), "character.json")
@@ -539,6 +602,11 @@ class MainActivity : ComponentActivity() {
         var gender by remember(id) { mutableStateOf(j.optString("gender")) }  // voz con la que responde (Speech)
         val scope = rememberCoroutineScope()
         var working by remember { mutableStateOf("") }
+        val src = File(f.parentFile, "source.png")
+        var hasSrc by remember(id) { mutableStateOf(src.isFile) }
+        val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u ->
+            if (u != null) try { saveSource(src.parentFile!!, u); hasSrc = true; toast("Imagen general guardada") } catch (e: Exception) { toast("No se pudo: ${e.message}") }
+        }
         // personalidad buscada en la red o deducida de la historia (como fruquis/personality.py); queda en el campo para revisarla antes de guardar
         fun persona(fromStory: Boolean) {
             val story = values[3].value
@@ -557,6 +625,8 @@ class MainActivity : ComponentActivity() {
             title = { Text("Editar personaje") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // imagen general y hoja neutral (en escritorio, misma vista «Editar personaje»); la hoja neutral se genera en escritorio
+                    Pill(if (hasSrc) "✓ Imagen general · cambiar…" else "Cargar imagen general…", Modifier.fillMaxWidth()) { pick.launch(arrayOf("image/*")) }
                     Text("Género (voz)", color = DIM, fontSize = 13.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         for ((k, label) in listOf("" to "Sin definir", "masculino" to "Masculino", "femenino" to "Femenino"))

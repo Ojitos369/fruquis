@@ -61,9 +61,19 @@ class View(QWidget):
     def enter(self, **kw):
         pass
 
-    def page(self, margins=(32, 24, 32, 20), spacing=14) -> QVBoxLayout:
-        """Contenido centrado con ancho máximo, como las apps modernas."""
-        outer = QHBoxLayout(self)
+    def page(self, margins=(32, 24, 32, 20), spacing=14, scroll=False) -> QVBoxLayout:
+        """Contenido centrado con ancho máximo, como las apps modernas. `scroll`: para páginas más altas que la ventana."""
+        host = self
+        if scroll:
+            area = QScrollArea(widgetResizable=True)
+            area.setFrameShape(QFrame.NoFrame)
+            area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            host = QWidget(objectName="body")
+            area.setWidget(host)
+            box = QVBoxLayout(self)
+            box.setContentsMargins(0, 0, 0, 0)
+            box.addWidget(area)
+        outer = QHBoxLayout(host)
         outer.setContentsMargins(0, 0, 0, 0)
         inner = QWidget()
         inner.setMaximumWidth(760)
@@ -136,7 +146,7 @@ class CharactersView(View):
 
     def __init__(self, shell):
         super().__init__(shell)
-        self.bg, self.chars, self.sel = Bg(), {}, None
+        self.chars, self.sel = {}, None
         main = QHBoxLayout(self)
         main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(0)
@@ -171,21 +181,14 @@ class CharactersView(View):
         right.addWidget(self.use_btn)
         grid = QGridLayout()
         grid.setSpacing(8)
-        for i, (lab, fn) in enumerate((("Catálogo de animaciones", self.catalog), ("Agregar hoja de sprites", self.add),
-                                       ("Imagen general y hoja neutral", self.refs), ("Prompt / generar animación", self.prompt),
-                                       ("Exportar (.zip)", self.export), ("Editar nombre y detalles", self.edit))):
-            grid.addWidget(button(lab, fn), i // 2, i % 2)
+        for i, (lab, fn) in enumerate((("Catálogo de animaciones", self.catalog), ("Editar personaje", self.edit), ("Exportar (.zip)", self.export))):
+            grid.addWidget(button(lab, fn), 0, i)
         right.addLayout(grid)
         self.del_btn = button("Eliminar personaje", self.remove, "danger")
         right.addWidget(self.del_btn)
         right.addWidget(QLabel("ANIMACIONES", objectName="section"))
         self.rep = QPlainTextEdit(readOnly=True)
         right.addWidget(self.rep, 1)
-        self.status = QLabel(objectName="hint")
-        right.addWidget(self.status)
-        self.stop_btn = button("Cancelar análisis", self.stop_analysis, "danger")
-        self.stop_btn.hide()
-        right.addWidget(self.stop_btn)
         main.addLayout(right, 1)
         self.list.currentRowChanged.connect(self.show_one)
 
@@ -254,38 +257,10 @@ class CharactersView(View):
         if c := self.cur():
             self.shell.push("catalog", cid=c.id)
 
-    def prompt(self):
-        if c := self.cur():
-            self.shell.push("prompt", cid=c.id)
-
-    def refs(self):
+    def edit(self):
+        """Imagen general, hoja neutral, nombre y detalles en una sola vista."""
         if c := self.cur():
             self.shell.push("refs", cid=c.id)
-
-    def edit(self):
-        if c := self.cur():
-            self.shell.push("profile", cid=c.id)
-
-    def add(self):
-        """Hoja de cualquier tamaño: se detectan los cuadros y la IA propone qué animaciones son; luego la revisas."""
-        c = self.cur()
-        path, _ = QFileDialog.getOpenFileName(self, "Hoja de sprites", "", "Imágenes (*.png *.webp *.jpg *.jpeg)")
-        if not c or not path:
-            return
-        self.status.setText("Analizando la hoja con la IA…")
-        self.stop_btn.show()
-        self.bg.run(lambda: sprites.plan(c.id, path, ai=True), lambda plan, err: self.planned(c, plan, err))
-
-    def stop_analysis(self):
-        self.bg.cancel()
-        self.planned(None, None, "Análisis cancelado.")
-
-    def planned(self, c, plan, err):
-        self.status.setText("")
-        self.stop_btn.hide()
-        if err:
-            return self.shell.toast(err, 5000)
-        self.shell.push("review", cid=c.id, plan=plan)
 
     def export(self):
         c = self.cur()
@@ -785,12 +760,12 @@ class NewCharView(View):
 class RefsView(View):
     """Referencias del personaje: la imagen general (la cargas tú) y la hoja neutral de 4 vistas (se genera o se carga). Son solo de
     referencia: sirven para generar cualquier animación con todos los detalles y no aparecen en el catálogo de animaciones."""
-    title = "Imagen general y hoja neutral"
+    title = "Editar personaje"
 
     def __init__(self, shell):
         super().__init__(shell)
         self.cid, self.job = "", Bg()
-        lay = self.page(spacing=12)
+        lay = self.page(spacing=12, scroll=True)
         hint = QLabel("La hoja neutral (frontal, trasera y dos laterales) es la base que se adjunta al generar cualquier animación para mantener "
                       "todos los detalles. Si generas una animación y no existe, se crea primero a partir de la imagen general.", objectName="dim")
         hint.setWordWrap(True)
@@ -800,7 +775,7 @@ class RefsView(View):
         self.src_pic, self.src_info = QLabel(alignment=Qt.AlignCenter), QLabel(objectName="dim")
         self.neu_pic, self.neu_info = QLabel(alignment=Qt.AlignCenter), QLabel(objectName="dim")
         cards.addLayout(self.card("IMAGEN GENERAL", self.src_pic, self.src_info,
-                                  (("Cargar imagen…", self.load_src, None), ("Identidad y anatomía", self.profile, None),
+                                  (("Cargar imagen…", self.load_src, None),
                                    ("Guardar…", lambda: self.save_ref("source"), "ghost"), ("Quitar", self.clear_src, "danger"))), 1)
         self.gen_btn = button("✨  Generar con ChatGPT", self.gen_neutral, "primary")
         self.improve_btn = button("Mejorar con chat", self.improve_neutral)
@@ -817,6 +792,8 @@ class RefsView(View):
         self.codex = QLabel(objectName="hint")
         lay.addWidget(self.codex)
         self.job.msg.connect(self.status.setText)
+        lay.addWidget(QLabel("NOMBRE Y DETALLES", objectName="h1"))
+        self.prof = ProfileView(shell, lay)  # sus campos van en esta misma página
 
     def card(self, title, pic, info, specs, buttons=None):
         box = QFrame(objectName="card")
@@ -838,6 +815,7 @@ class RefsView(View):
 
     def enter(self, cid="", **kw):
         self.cid = cid or self.cid
+        self.prof.enter(cid=self.cid)
         self.refresh()
         self.codex.setText("Comprobando Codex…")
         Bg_ = getattr(self, "_chk", None) or Bg()
@@ -886,9 +864,6 @@ class RefsView(View):
         if path:
             shutil.copyfile(f, path)
             self.shell.toast("Imagen guardada")
-
-    def profile(self):
-        self.shell.push("profile", cid=self.cid)
 
     def clear_src(self):
         sprites.clear_ref(self.cid, "source")
@@ -1119,6 +1094,18 @@ class SettingsView(View):
         self.size.valueChanged.connect(lambda v: self.size_lb.setText(f"{v}%"))
         self.size.sliderReleased.connect(self.apply_size)
         self.size_lb.setText(f"{self.size.value()}%")
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Monitores donde puede andar"), 1)
+        ident = QPushButton("Identificar")
+        ident.setToolTip("Muestra el número de cada monitor en su pantalla")
+        ident.clicked.connect(self.identify)
+        row.addWidget(ident)
+        lay.addLayout(row)
+        self.mon_box = QVBoxLayout()
+        lay.addLayout(self.mon_box)
+        self.fill_monitors()
+        QApplication.instance().screenAdded.connect(self.fill_monitors)
+        QApplication.instance().screenRemoved.connect(self.fill_monitors)
         lay.addSpacing(10)
         lay.addWidget(QLabel("GENERACIÓN", objectName="section"))
         row = QHBoxLayout()
@@ -1365,6 +1352,42 @@ class SettingsView(View):
             return ok, txt, path
         self.job.run(work, lambda r, e: st.setText(f"✗ {e}" if e else f"{'✓' if r[0] else '✗'} {r[1]}  ·  {r[2]}"))
 
+    def fill_monitors(self, *_):
+        """Una casilla por monitor (mismo número que «Identificar» y que las órdenes de voz); se guardan los apagados por nombre."""
+        while self.mon_box.count():
+            self.mon_box.takeAt(0).widget().deleteLater()
+        off = store.get("screens_off", [])
+        for i, s in enumerate(QApplication.screens()):
+            g = s.geometry()
+            cb = QCheckBox(f"Monitor {i + 1} · {s.name()} · {g.width()}×{g.height()}")
+            cb.setChecked(s.name() not in off)
+            cb.toggled.connect(lambda on, n=s.name(), cb=cb: self.set_monitor(n, on, cb))
+            self.mon_box.addWidget(cb)
+
+    def set_monitor(self, name: str, on: bool, cb: QCheckBox):
+        off = [n for n in store.get("screens_off", []) if n != name] + ([] if on else [name])
+        if all(s.name() in off for s in QApplication.screens()):  # al menos uno encendido
+            cb.blockSignals(True)
+            cb.setChecked(True)
+            cb.blockSignals(False)
+            return
+        store.put("screens_off", off)
+        self.pet.load_screens()  # si estaba en uno apagado, se va a otro en su siguiente revisión
+
+    def identify(self):
+        """Número grande en el centro de cada monitor durante 3 s."""
+        self.marks = []
+        for i, s in enumerate(QApplication.screens()):
+            lb = QLabel(f"{i + 1}")
+            lb.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus)
+            lb.setAttribute(Qt.WA_ShowWithoutActivating)
+            lb.setAlignment(Qt.AlignCenter)
+            lb.setStyleSheet("background:#6b4fbb;color:white;font-size:140px;font-weight:bold")
+            lb.setGeometry(s.geometry().center().x() - 120, s.geometry().center().y() - 120, 240, 240)
+            lb.show()
+            self.marks.append(lb)
+        QTimer.singleShot(3000, lambda: [m.close() for m in self.marks])
+
     def apply_size(self):
         scale = round(self.size.value() / 100, 2)
         store.put("scale", scale)
@@ -1484,7 +1507,7 @@ class GenBatchView(View):
             return self.shell.open("settings")
         c = sprites.get(self.cid)
         if not (c.neutral or c.source or sprites.reference(c)):
-            return self.shell.toast("Carga primero la imagen general del personaje (Imagen general y hoja neutral).", 5000)
+            return self.shell.toast("Carga primero la imagen general del personaje (Editar personaje).", 5000)
         started = self.shell.gen.start(self.cid, names)
         self.shell.toast(f"Generando {len(started)} en segundo plano" if started else "Esas ya están en curso")
 
@@ -1696,10 +1719,10 @@ class ProfileView(View):
     generado se parece al personaje y cada animación se adapta a su cuerpo (una serpiente repta, un pulpo usa tentáculos…)."""
     title = "Identidad y anatomía"
 
-    def __init__(self, shell):
+    def __init__(self, shell, lay=None):
         super().__init__(shell)
         self.cid, self.job, self.loading = "", Bg(), False
-        lay = self.page(spacing=8)
+        lay = lay or self.page(spacing=8)  # con `lay` se incrusta en otra vista (RefsView)
         hint = QLabel("La IA mira las imágenes del personaje y escribe cómo es y qué cuerpo tiene; con eso se adaptan los prompts de cada animación. "
                       "Puedes corregir los textos a mano.", objectName="dim")
         hint.setWordWrap(True)

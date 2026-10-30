@@ -41,13 +41,15 @@ def _ext(props: str, name: str):
     return tuple(int(v) for v in m.groups()) if m else (0, 0, 0, 0)  # izquierda, derecha, arriba, abajo
 
 
-def _x11() -> dict | None:
-    m = re.search(r"0x[0-9a-f]+", _run("xprop", "-root", "_NET_ACTIVE_WINDOW"))
-    if not m or int(m.group(), 16) == 0:
-        return None
-    wid = m.group()
-    props = _run("xprop", "-id", wid, "WM_CLASS", "_NET_WM_NAME", "_NET_FRAME_EXTENTS", "_GTK_FRAME_EXTENTS", "_NET_WM_STATE")
-    if "_NET_WM_STATE_HIDDEN" in props:
+def _x11(wid: str | None = None) -> dict | None:
+    """La ventana `wid` (o la activa) con su rectángulo visible; None si está minimizada."""
+    if wid is None:
+        m = re.search(r"0x[0-9a-f]+", _run("xprop", "-root", "_NET_ACTIVE_WINDOW"))
+        if not m or int(m.group(), 16) == 0:
+            return None
+        wid = m.group()
+    props = _run("xprop", "-id", wid, "WM_CLASS", "_NET_WM_NAME", "_NET_FRAME_EXTENTS", "_GTK_FRAME_EXTENTS", "_NET_WM_STATE", "_NET_WM_WINDOW_TYPE")
+    if re.search(r"_NET_WM_STATE_HIDDEN|_NET_WM_WINDOW_TYPE_(DESKTOP|DOCK)", props):  # minimizada, el fondo del escritorio o un panel
         return None
     cls = re.search(r'WM_CLASS.*?= (.*)', props)
     title = re.search(r'_NET_WM_NAME.*?= "(.*)"', props)
@@ -65,12 +67,12 @@ def _x11() -> dict | None:
             "x": x - fl + gl, "y": y - ft + gt, "w": w + fl + fr - gl - gr, "h": h + ft + fb - gt - gb}
 
 
-def _win() -> dict | None:
+def _win(hwnd=None) -> dict | None:
     import ctypes
     from ctypes import wintypes
 
     u = ctypes.windll.user32
-    hwnd = u.GetForegroundWindow()
+    hwnd = hwnd or u.GetForegroundWindow()
     if not hwnd:
         return None
     buf = ctypes.create_unicode_buffer(256)
@@ -160,6 +162,36 @@ def list_windows() -> list:
         if len(p) >= 8 and p[1] != "-1":
             out.append({"id": p[0], "title": p[7], "x": int(p[2]), "y": int(p[3]), "w": int(p[4]), "h": int(p[5])})
     return out
+
+
+def _hwnds() -> list:
+    """Ventanas de Windows a la vista, de la de enfrente a la de atrás: sin minimizadas ni ocultas (cloaked: apps UWP o de otro escritorio)."""
+    import ctypes
+    from ctypes import wintypes
+
+    u, out = ctypes.windll.user32, []
+
+    def cb(hwnd, _):
+        cloaked = ctypes.c_int(0)
+        ctypes.windll.dwmapi.DwmGetWindowAttribute(wintypes.HWND(hwnd), 14, ctypes.byref(cloaked), 4)  # 14 = DWMWA_CLOAKED
+        if u.IsWindowVisible(hwnd) and not u.IsIconic(hwnd) and not cloaked.value and u.GetWindowTextLengthW(hwnd):
+            out.append(hwnd)
+        return True
+    u.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)(cb), 0)
+    return out
+
+
+def visible() -> list:
+    """Ventanas a la vista (no minimizadas, del escritorio virtual actual) con el formato de active(). Lento: llamar fuera del hilo de la interfaz."""
+    if sys.platform == "darwin":
+        return list_windows()
+    if sys.platform == "win32":
+        return [w for h in _hwnds() if (w := _win(h))]
+    if not os.environ.get("DISPLAY"):
+        return []
+    m = re.search(r"= (\d+)", _run("xprop", "-root", "_NET_CURRENT_DESKTOP"))
+    desk = m.group(1) if m else "0"
+    return [w for line in _run("wmctrl", "-l").splitlines() if len(p := line.split(None, 2)) >= 2 and p[1] == desk and (w := _x11(hex(int(p[0], 16))))]  # mismo id que active()
 
 
 def grab(fragment: str):
