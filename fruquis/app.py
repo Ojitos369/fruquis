@@ -974,7 +974,7 @@ def run(scale: float | None = None):
     from .chatui import ChatView
     from .shell import MainWindow
     from .voice import AWAKE_S, Voice
-    from .ui import CareView, CatalogView, CharactersView, NewCharView, AllPromptView, GenBatchView, NeutralPromptView, ProfileView, RefineView, PromptView, SettingsView, RefsView, ReviewView
+    from .ui import CareView, CatalogView, CharactersView, NewCharView, AnimsView, JobsView, NeutralPromptView, ProfileView, RefineView, PromptView, SettingsView, RefsView, ReviewView
 
     app = QApplication([])
     app.setWindowIcon(QIcon(str(Path(__file__).with_name("icon.png"))))  # Ayax, igual que el ícono de Android
@@ -995,11 +995,14 @@ def run(scale: float | None = None):
             QMessageBox.warning(None, "Fruquis", str(e))
             return
     pet = Pet(sprites.get(store.get("active", "")), scale or store.get("scale", 0.6), bridge)
+    from .linkhub import LinkHub
+    pet.hub = LinkHub(pet)  # vínculo con otro equipo (órdenes y archivos); no hace nada hasta que lo vinculas en Ajustes
+    app.aboutToQuit.connect(pet.hub.link.stop)
     machine.start()  # índice local (apps, binarios, carpetas) en segundo plano, guardado solo en ~/.fruquis
     voice = pet.voice = Voice(lambda: pet.char.name, lambda: [c.name for c in sprites.list_all().values()], lambda: pet.busy_phase is not None)  # antes que las vistas: Ajustes lista los micrófonos
     shell = MainWindow(pet)
     for name, view in (("chat", ChatView(shell, bridge)), ("care", CareView(shell)), ("chars", CharactersView(shell)), ("catalog", CatalogView(shell)),
-                       ("prompt", PromptView(shell)), ("review", ReviewView(shell)), ("newchar", NewCharView(shell)), ("refs", RefsView(shell)), ("allprompt", AllPromptView(shell)), ("neutralprompt", NeutralPromptView(shell)), ("settings", SettingsView(shell)), ("genbatch", GenBatchView(shell)), ("refine", RefineView(shell)), ("profile", ProfileView(shell))):
+                       ("prompt", PromptView(shell)), ("review", ReviewView(shell)), ("newchar", NewCharView(shell)), ("refs", RefsView(shell)), ("jobs", JobsView(shell)), ("neutralprompt", NeutralPromptView(shell)), ("settings", SettingsView(shell)), ("anims", AnimsView(shell)), ("refine", RefineView(shell)), ("profile", ProfileView(shell))):
         shell.add_view(name, view)
 
     def toggle_chat():

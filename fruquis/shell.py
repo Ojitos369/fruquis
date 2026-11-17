@@ -1,14 +1,14 @@
 """Ventana única de Fruquis: una sola ventana que cambia de vista (chat, cuidar, personajes, catálogo, prompt…) con historial como un
 navegador. Esc, Alt+←, el botón ← y el botón atrás del ratón regresan a la vista anterior; en la primera vista, Esc oculta la ventana."""
-from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtCore import QPoint, QSize, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
-from . import store
+from . import icons, store
 from .gen import GenManager
 
-ROOTS = (("chat", "💬  Chat"), ("care", "🍙  Cuidar"), ("chars", "🧸  Personajes"), ("settings", "⚙  Ajustes"))
-OWNER = {"catalog": "chars", "prompt": "chars", "review": "chars", "newchar": "chars", "refs": "chars", "allprompt": "chars", "neutralprompt": "chars", "genbatch": "chars", "refine": "chars", "profile": "chars"}  # a qué pestaña pertenece cada vista
+ROOTS = (("chat", "chat", "Chat"), ("care", "heart", "Cuidar"), ("chars", "user", "Personajes"), ("settings", "gear", "Ajustes"))  # (vista, icono, tooltip)
+OWNER = {"catalog": "chars", "prompt": "chars", "review": "chars", "newchar": "chars", "refs": "chars", "jobs": "chars", "neutralprompt": "chars", "anims": "chars", "refine": "chars", "profile": "chars"}  # a qué pestaña pertenece cada vista
 
 
 class FloatChat(QWidget):
@@ -33,9 +33,9 @@ class FloatChat(QWidget):
         bl.setContentsMargins(12, 6, 6, 6)
         self.title = QLabel("💬", objectName="dim")
         bl.addWidget(self.title, 1)
-        for text, tip, fn in (("↗", "Abrir en la ventana", self.to_window), ("✕", "Cerrar", self.shell.close_float)):
-            b = QPushButton(text, objectName="ghost", cursor=Qt.PointingHandCursor, toolTip=tip)
-            b.setFixedWidth(30)
+        for ic, tip, fn in (("external", "Abrir en la ventana", self.to_window), ("x", "Cerrar", self.shell.close_float)):
+            b = QPushButton(objectName="ib", cursor=Qt.PointingHandCursor, toolTip=tip, icon=icons.icon(ic))
+            b.setFixedSize(30, 30)
             b.clicked.connect(fn)
             bl.addWidget(b)
         self.bar = bar
@@ -104,15 +104,16 @@ class MainWindow(QWidget):
         bl = QHBoxLayout(bar)
         bl.setContentsMargins(12, 8, 12, 8)
         bl.setSpacing(6)
-        self.back_btn = QPushButton("←", objectName="ghost", cursor=Qt.PointingHandCursor, toolTip="Atrás (Esc)")
-        self.back_btn.setFixedWidth(36)
+        self.back_btn = QPushButton(objectName="ib", cursor=Qt.PointingHandCursor, toolTip="Atrás (Esc)", icon=icons.icon("back"))
+        self.back_btn.setFixedSize(34, 34)
         self.back_btn.clicked.connect(self.back)
         self.title = QLabel(objectName="h2")
         bl.addWidget(self.back_btn)
         bl.addWidget(self.title, 1)
         self.tabs = {}
-        for name, lab in ROOTS:
-            b = QPushButton(lab, objectName="tab", cursor=Qt.PointingHandCursor, checkable=True)
+        for name, ic, lab in ROOTS:
+            b = QPushButton(objectName="tab", cursor=Qt.PointingHandCursor, checkable=True, toolTip=lab, icon=icons.icon(ic))
+            b.setIconSize(QSize(20, 20))
             b.clicked.connect(lambda _=False, n=name: self.open(n))
             bl.addWidget(b)
             self.tabs[name] = b

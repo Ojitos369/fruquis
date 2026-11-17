@@ -35,6 +35,17 @@ QPushButton#ghost:hover {{ background:{RAISED}; color:{TEXT}; }}
 QPushButton#danger {{ background:transparent; border:none; color:{DANGER}; }}
 QPushButton#danger:hover {{ background:#3a2430; }}
 QPushButton#pill {{ border-radius:16px; padding:8px 12px; }}
+QPushButton#ib, QPushButton#ibp, QPushButton#ibd {{ border:none; border-radius:10px; padding:0; background:transparent; }}
+QPushButton#ib:hover {{ background:{RAISED}; }}
+QPushButton#ibp {{ background:{ACCENT}; }}
+QPushButton#ibp:hover {{ background:#9b80ee; }}
+QPushButton#ibp:disabled {{ background:#34343f; }}
+QPushButton#ibd:hover {{ background:#3a2430; }}
+QPushButton#ib:disabled, QPushButton#ibd:disabled {{ background:transparent; }}
+QFrame#card[active="true"] {{ border:1px solid {ACCENT}; }}
+QFrame#card:hover {{ border-color:#3d3d52; }}
+QFrame#card[active="true"]:hover {{ border-color:{ACCENT}; }}
+QLabel#chip {{ border-radius:8px; padding:2px 8px; font-size:11px; font-weight:600; }}
 
 QListWidget {{ background:transparent; border:none; outline:none; }}
 QListWidget::item {{ padding:9px 12px; margin:2px 8px; border-radius:10px; }}

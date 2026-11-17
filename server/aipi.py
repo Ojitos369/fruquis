@@ -2,6 +2,7 @@
   POST /api/chat/?key=K   {prompt, system?, model?, effort?, images?: [b64|{data,mime}]}  ->  {text}
   POST /api/image/?key=K  {prompt, images?: [b64|{data,mime}]}                           ->  {image: <png b64>, mime}
   GET  /api/health/?key=K
+  POST /api/link/send/?key=K&room=R {b, s}   y   GET /api/link/poll/?key=K&room=R&after=N&wait=25  ->  {seq, items:[{seq, e}]}   (vínculo entre equipos)
 Las imágenes llegan en base64, se dejan en una carpeta temporal para que el CLI las lea y se borran al terminar. Config por entorno:
 AIPI_KEY_FILE (def. ~/aipi/key), AIPI_PORT (8377), AIPI_JOBS (3 trabajos a la vez). `python3 aipi.py` en el servidor."""
 import base64
@@ -14,6 +15,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -109,6 +111,60 @@ def image(b: dict) -> dict:
 
 ROUTES = {"/api/chat": chat, "/api/image": image}
 
+# Relay del vínculo entre equipos: cola por sala (hash de un código que solo conocen los equipos). Solo reenvía sobres firmados que no puede leer ni forjar.
+LINK_MAX = 25 * 1024 * 1024   # tamaño de un sobre
+LINK_ROOM = 60 * 1024 * 1024  # bytes por sala
+LINK_TTL = 600                # segundos que se guarda un sobre
+ROOMS: dict = {}              # sala -> {"seq": int, "items": [(seq, sobre, t, bytes)]}
+LINK_CV = threading.Condition()
+
+
+def link_room(q: dict) -> str:
+    room = (q.get("room") or [""])[0]
+    if not re.fullmatch(r"[0-9a-f]{16}", room):
+        raise Bad("sala inválida")
+    return room
+
+
+def link_prune(r: dict):
+    now = time.time()
+    r["items"] = [i for i in r["items"] if now - i[2] < LINK_TTL]
+    while sum(i[3] for i in r["items"]) > LINK_ROOM:
+        r["items"].pop(0)
+
+
+def link_send(q: dict, env: dict) -> dict:
+    room = link_room(q)
+    if not isinstance(env, dict) or not isinstance(env.get("b"), str) or not isinstance(env.get("s"), str):
+        raise Bad("sobre inválido")
+    with LINK_CV:
+        if room not in ROOMS and len(ROOMS) >= 200:
+            raise Bad("demasiadas salas", 429)
+        r = ROOMS.setdefault(room, {"seq": 0, "items": []})
+        r["seq"] = max(r["seq"] + 1, int(time.time() * 1000))  # basado en la hora: no retrocede si el servidor se reinicia
+        r["items"].append((r["seq"], env, time.time(), len(env["b"])))
+        link_prune(r)
+        LINK_CV.notify_all()
+        return {"ok": True, "seq": r["seq"]}
+
+
+def link_poll(q: dict) -> dict:
+    """Sin `after`: solo dice el número actual (para no repetir órdenes viejas). Con `after`: espera hasta `wait` s por sobres nuevos."""
+    room = link_room(q)
+    after, wait = (q.get("after") or [None])[0], min(int((q.get("wait") or ["0"])[0] or 0), 30)
+    end = time.time() + wait
+    with LINK_CV:
+        r = ROOMS.get(room) or {"seq": 0, "items": []}
+        if after is None:
+            return {"seq": r["seq"], "items": []}
+        while True:
+            r = ROOMS.get(room) or r
+            link_prune(r)
+            items = [{"seq": s, "e": e} for s, e, _, _ in r["items"] if s > int(after)]
+            if items or time.time() >= end:
+                return {"seq": r["seq"], "items": items}
+            LINK_CV.wait(end - time.time())
+
 
 class H(BaseHTTPRequestHandler):
     def reply(self, code, obj):
@@ -127,6 +183,22 @@ class H(BaseHTTPRequestHandler):
         path = u.path.rstrip("/")
         if path == "/api/health":
             return self.reply(200, {"ok": True, "claude": os.path.exists(CLAUDE), "codex": os.path.exists(CODEX)})
+        try:  # el vínculo no pasa por JOBS: una espera larga (poll) no debe gastar un cupo de IA
+            if path == "/api/link/poll" and not post:
+                return self.reply(200, link_poll(parse_qs(u.query)))
+            if path == "/api/link/send" and post:
+                n = int(self.headers.get("Content-Length") or 0)
+                if n > LINK_MAX:
+                    raise Bad("sobre demasiado grande", 413)
+                try:
+                    env = json.loads(self.rfile.read(n) or b"{}")
+                except ValueError:
+                    raise Bad("JSON inválido")
+                return self.reply(200, link_send(parse_qs(u.query), env))
+        except Bad as e:
+            return self.reply(e.code, {"error": str(e)})
+        except ValueError:
+            return self.reply(400, {"error": "parámetros inválidos"})
         fn = ROUTES.get(path)
         if not fn or not post:
             return self.reply(404, {"error": "ruta desconocida"})

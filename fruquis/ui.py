@@ -5,10 +5,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QPixmap
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider, QSpinBox, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QLayout, QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider, QSpinBox, QStackedWidget, QVBoxLayout, QWidget)
 
-from . import binaries, provider, speech, sprites, store
+from . import binaries, icons, provider, speech, sprites, store
 from .voice import MODELS
 from .care import ACTIONS
 from .chatui import avatar, copy_text, pick_images
@@ -61,7 +61,7 @@ class View(QWidget):
     def enter(self, **kw):
         pass
 
-    def page(self, margins=(32, 24, 32, 20), spacing=14, scroll=False) -> QVBoxLayout:
+    def page(self, margins=(32, 24, 32, 20), spacing=14, scroll=False, width=760) -> QVBoxLayout:
         """Contenido centrado con ancho máximo, como las apps modernas. `scroll`: para páginas más altas que la ventana."""
         host = self
         if scroll:
@@ -76,7 +76,7 @@ class View(QWidget):
         outer = QHBoxLayout(host)
         outer.setContentsMargins(0, 0, 0, 0)
         inner = QWidget()
-        inner.setMaximumWidth(760)
+        inner.setMaximumWidth(width)
         col = QVBoxLayout(inner)
         col.setContentsMargins(*margins)
         col.setSpacing(spacing)
@@ -84,6 +84,17 @@ class View(QWidget):
         outer.addWidget(inner, 100)
         outer.addStretch(1)
         return col
+
+    def reflow(self, grid: QGridLayout, widgets: list, cw: int, cols=0) -> int:
+        """Reparte las cards en tantas columnas como quepan; devuelve cuántas son."""
+        n = max(1, (min(self.width(), 1100) - 56 + 14) // (cw + 14))
+        if n != cols or grid.count() != len(widgets):
+            while grid.count():
+                grid.takeAt(0)
+            for i, w in enumerate(widgets):
+                grid.addWidget(w, i // n, i % n, Qt.AlignTop | Qt.AlignLeft)
+            grid.setColumnStretch(n, 1)
+        return n
 
 
 def button(text, fn, name=None):
@@ -94,8 +105,53 @@ def button(text, fn, name=None):
     return b
 
 
+def seticon(b: QPushButton, name: str, tip: str | None = None):
+    """Cambia el icono (y la acción que dice el tooltip) de un botón creado con `ibtn`."""
+    b.setIcon(icons.icon(name, {"ibp": icons.ON, "ibd": "#f07178"}.get(b.objectName(), icons.IDLE)))
+    if tip:
+        b.setToolTip(tip)
+
+
+def ibtn(name: str, tip: str, fn, kind="ib", size=34) -> QPushButton:
+    """Botón de solo icono: la acción sale al pasar el cursor. `kind`: ib = discreto, ibp = principal, ibd = peligroso."""
+    b = QPushButton(cursor=Qt.PointingHandCursor, toolTip=tip, objectName=kind)
+    b.setFixedSize(size, size)
+    b.setIconSize(QSize(18, 18))
+    seticon(b, name)
+    b.clicked.connect(lambda _=False: fn())
+    return b
+
+
+class Tap(QLabel):
+    """Etiqueta (imagen o texto) en la que se puede pulsar."""
+    clicked = Signal()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+
+
+def frame_index(k: int, n: int, mode: str) -> int:
+    """Cuadro que toca en el paso k de una animación de n cuadros (loop, pingpong o once)."""
+    if mode == "pingpong" and n > 1:
+        m = k % (2 * n - 2)
+        return m if m < n else 2 * n - 2 - m
+    return min(k, n - 1) if mode == "once" else k % n
+
+
+def anim_mode(a: dict) -> str:
+    return "pingpong" if a.get("pingpong") else ("loop" if a.get("loop", True) else "once")
+
+
+def anim_frames(c, a: dict, h: int) -> list:
+    pm = QPixmap(str(a["sheet"]))
+    cw, ch = c.cell
+    cols = max(1, pm.width() // cw)
+    return [pm.copy((i % cols) * cw, (a["row"] + i // cols) * ch, cw, ch).scaledToHeight(h, Qt.SmoothTransformation) for i in range(a["frames"])]
+
+
 class CareView(View):
-    """Tamagotchi minimalista: cuatro barras finas y acciones en píldoras."""
+    """Tamagotchi minimalista: cuatro barras finas y acciones como iconos (el nombre sale al pasar el cursor)."""
     title = "Cuidar"
     ICON = {"hambre": "🍙", "limpieza": "🫧", "diversion": "🎾", "energia": "💤"}
 
@@ -108,23 +164,22 @@ class CareView(View):
         for k, lab in LABELS.items():
             row = QHBoxLayout()
             row.setSpacing(10)
-            ic = QLabel(self.ICON[k])
+            ic = QLabel(self.ICON[k], toolTip=lab)
             ic.setFixedWidth(24)
-            name = QLabel(lab, objectName="dim")
-            name.setFixedWidth(80)
-            b = QProgressBar(textVisible=False)
+            b = QProgressBar(textVisible=False, toolTip=lab)
             b.setRange(0, 100)
-            for w in (ic, name, b):
+            for w in (ic, b):
                 row.addWidget(w)
             lay.addLayout(row)
             self.bars[k] = b
         lay.addSpacing(8)
-        grid = QGridLayout()
+        grid = QHBoxLayout()
         grid.setSpacing(8)
-        for i, act in enumerate(ACTIONS):
-            btn = QPushButton(f"{ACTIONS[act][1].split()[0]}  {act.capitalize()}", objectName="pill", cursor=Qt.PointingHandCursor)
+        for act in ACTIONS:
+            btn = QPushButton(ACTIONS[act][1].split()[0], objectName="pill", cursor=Qt.PointingHandCursor, toolTip=act.capitalize())
+            btn.setStyleSheet("font-size:20px")
             btn.clicked.connect(lambda _=False, a=act: self.pet.do(a))
-            grid.addWidget(btn, i // 3, i % 3)
+            grid.addWidget(btn)
         lay.addLayout(grid)
         lay.addStretch(1)
         QTimer(self, interval=1000, timeout=self.refresh).start()
@@ -141,105 +196,102 @@ class CareView(View):
 
 
 class CharactersView(View):
-    """Lista de personajes a la izquierda; detalle y acciones a la derecha."""
+    """Catálogo de personajes en cards: tocar el personaje lo activa; sus acciones son iconos bajo el nombre."""
     title = "Personajes"
+    CW = 168
 
     def __init__(self, shell):
         super().__init__(shell)
-        self.chars, self.sel = {}, None
-        main = QHBoxLayout(self)
-        main.setContentsMargins(0, 0, 0, 0)
-        main.setSpacing(0)
-        side = QFrame(objectName="side")
-        side.setFixedWidth(250)
-        sv = QVBoxLayout(side)
-        sv.setContentsMargins(0, 12, 0, 12)
-        self.list = QListWidget()
-        self.list.setIconSize(QSize(34, 34))
-        sv.addWidget(self.list, 1)
-        row = QHBoxLayout()
-        row.setContentsMargins(10, 0, 10, 0)
-        for lab, fn in (("＋ Nuevo", lambda: shell.push("newchar")), ("Importar", self.imp)):
-            row.addWidget(button(lab, fn, "ghost"))
-        sv.addLayout(row)
-        main.addWidget(side)
-        right = QVBoxLayout()
-        right.setContentsMargins(28, 24, 28, 20)
-        right.setSpacing(14)
-        head = QHBoxLayout()
-        head.setSpacing(16)
-        self.pic = QLabel()
-        titles = QVBoxLayout()
-        self.name, self.desc = QLabel(objectName="h1"), QLabel(objectName="dim")
-        self.desc.setWordWrap(True)
-        titles.addWidget(self.name)
-        titles.addWidget(self.desc)
-        head.addWidget(self.pic)
-        head.addLayout(titles, 1)
-        right.addLayout(head)
-        self.use_btn = button("Usar este personaje", self.use, "primary")
-        right.addWidget(self.use_btn)
-        grid = QGridLayout()
-        grid.setSpacing(8)
-        for i, (lab, fn) in enumerate((("Catálogo de animaciones", self.catalog), ("Editar personaje", self.edit), ("Exportar (.zip)", self.export))):
-            grid.addWidget(button(lab, fn), 0, i)
-        right.addLayout(grid)
-        self.del_btn = button("Eliminar personaje", self.remove, "danger")
-        right.addWidget(self.del_btn)
-        right.addWidget(QLabel("ANIMACIONES", objectName="section"))
-        self.rep = QPlainTextEdit(readOnly=True)
-        right.addWidget(self.rep, 1)
-        main.addLayout(right, 1)
-        self.list.currentRowChanged.connect(self.show_one)
+        self.chars, self.sel, self.arm, self.cols = {}, None, None, 0
+        lay = self.page(margins=(28, 18, 28, 18), spacing=14, scroll=True, width=1100)
+        bar = QHBoxLayout()
+        bar.setSpacing(4)
+        bar.addStretch(1)
+        self.jobs_btn = ibtn("activity", "Generaciones", lambda: shell.push("jobs"))
+        for b in (ibtn("upload", "Importar (.zip)", self.imp), self.jobs_btn, ibtn("plus", "Nuevo personaje", lambda: shell.push("newchar"), "ibp")):
+            bar.addWidget(b)
+        lay.addLayout(bar)
+        host = QWidget()
+        self.grid = QGridLayout(host)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(14)
+        lay.addWidget(host)
+        lay.addStretch(1)
+        self.cards = []
+        self.arm_t = QTimer(self, singleShot=True, interval=3000, timeout=self.disarm)
+        shell.gen.changed.connect(self.badge)
 
     def enter(self, **kw):
         self.reload(self.sel)
+        self.badge()
+
+    def badge(self):
+        n = self.shell.gen.pending()
+        self.jobs_btn.setText(f" {n}" if n else "")
+        self.jobs_btn.setFixedWidth(52 if n else 34)
 
     def reload(self, select=None):
         self.chars = sprites.list_all()
-        self.list.blockSignals(True)
-        self.list.clear()
-        for c in self.chars.values():
-            self.list.addItem(QListWidgetItem(QIcon(avatar(sprites.reference(c), 34)), c.name + ("   ●" if c.id == self.pet.char.id else "")))
-        self.list.blockSignals(False)
-        ids = list(self.chars)
-        want = select or self.pet.char.id
-        self.list.setCurrentRow(ids.index(want) if want in ids else 0)
-        self.show_one()
+        for c in self.cards:
+            c.deleteLater()
+        self.cards = [self.card(c) for c in self.chars.values()]
+        self.cols = 0
+        self.flow()
 
-    def cur(self):
-        i = self.list.currentRow()
-        return list(self.chars.values())[i] if 0 <= i < len(self.chars) else None
+    def card(self, c) -> QFrame:
+        active = c.id == self.pet.char.id
+        box = QFrame(objectName="card")
+        box.setProperty("active", active)
+        box.setFixedWidth(self.CW)
+        v = QVBoxLayout(box)
+        v.setContentsMargins(10, 14, 10, 8)
+        v.setSpacing(6)
+        pic = Tap(alignment=Qt.AlignCenter, cursor=Qt.PointingHandCursor, toolTip="Usar este personaje")
+        pic.setPixmap(avatar(sprites.reference(c), 96))
+        pic.clicked.connect(lambda c=c: self.use(c))
+        name = QLabel(c.name, objectName="h2", alignment=Qt.AlignCenter)
+        name.setStyleSheet("padding:0")
+        name.setToolTip(c.description)
+        v.addWidget(pic)
+        v.addWidget(name)
+        row = QHBoxLayout()
+        row.setSpacing(0)
+        trash = ibtn("trash", "Eliminar", lambda c=c: self.remove(c, trash), "ibd", 30)
+        trash.setEnabled(not (sprites.BUNDLED / c.id).is_dir())  # los incluidos con la app no se borran
+        for b in (ibtn("film", "Animaciones", lambda c=c: self.shell.push("anims", cid=c.id), size=30), ibtn("edit", "Editar", lambda c=c: self.shell.push("refs", cid=c.id), size=30),
+                  ibtn("download", "Exportar (.zip)", lambda c=c: self.export(c), size=30), trash):
+            row.addWidget(b)
+        v.addLayout(row)
+        return box
 
-    def show_one(self, _=0):
-        c = self.cur()
-        if not c:
+    def flow(self):
+        self.cols = self.reflow(self.grid, self.cards, self.CW, self.cols)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.flow()
+
+    def use(self, c):
+        if c.id == self.pet.char.id:
             return
         self.sel = c.id
-        self.pic.setPixmap(avatar(sprites.reference(c), 72))
-        self.name.setText(c.name)
-        self.desc.setText(f"{c.description}\nCeldas {c.cell[0]}×{c.cell[1]} · {len(c.anims)} animaciones")
-        active = c.id == self.pet.char.id
-        self.use_btn.setText("Personaje activo ✓" if active else "Usar este personaje")
-        self.use_btn.setEnabled(not active)
-        self.del_btn.setEnabled(not (sprites.BUNDLED / c.id).is_dir())  # los incluidos con la app no se borran
-        self.del_btn.setText("Eliminar personaje")
-        self.rep.setPlainText("\n".join(sprites.report(c)))
+        self.pet.load_character(c, remember=True)
+        self.pet.say(f"¡Ahora soy {c.name}!")
+        self.reload()
+        self.shell.toast(f"Ahora es {c.name}")
 
-    def use(self):
-        if c := self.cur():
-            self.pet.load_character(c, remember=True)
-            self.pet.say(f"¡Ahora soy {c.name}!")
-            self.reload(c.id)
-            self.shell.toast(f"Ahora es {c.name}")
+    def disarm(self):
+        if self.arm:
+            self.arm = None
+            self.reload()
 
-    def remove(self):
-        c = self.cur()
-        if not c:
+    def remove(self, c, btn):
+        if self.arm != c.id:  # confirmación en dos pasos: el icono pasa a ✓ y vuelve solo a los 3 s
+            self.arm = c.id
+            seticon(btn, "check", "¿Seguro? Pulsa otra vez")
+            self.arm_t.start()
             return
-        if self.del_btn.text() == "Eliminar personaje":  # confirmación en dos pasos, como en el catálogo
-            self.del_btn.setText("¿Seguro? Pulsa otra vez")
-            return
+        self.arm = None
         if len(self.chars) < 2:
             return self.shell.toast("Debe quedar al menos un personaje.", 4000)
         if c.id == self.pet.char.id:  # la mascota pasa a otro personaje antes de borrar el activo
@@ -250,22 +302,9 @@ class CharactersView(View):
         except (SystemExit, OSError) as e:
             return self.shell.toast(str(e), 5000)
         self.shell.toast(f"Eliminado: {c.name}")
-        self.sel = None
         self.reload()
 
-    def catalog(self):
-        if c := self.cur():
-            self.shell.push("catalog", cid=c.id)
-
-    def edit(self):
-        """Imagen general, hoja neutral, nombre y detalles en una sola vista."""
-        if c := self.cur():
-            self.shell.push("refs", cid=c.id)
-
-    def export(self):
-        c = self.cur()
-        if not c:
-            return
+    def export(self, c):
         path, _ = QFileDialog.getSaveFileName(self, "Exportar personaje", str(Path.home() / f"{c.id}.zip"), "Zip (*.zip)")
         if path:
             try:
@@ -282,13 +321,202 @@ class CharactersView(View):
             c = sprites.import_character(path)
         except SystemExit as e:
             return self.shell.toast(str(e), 6000)
-        self.shell.toast(f"Importado: {c.name} · pulsa «Usar este personaje» para activarlo", 4500)
+        self.shell.toast(f"Importado: {c.name}", 3000)
         self.sel = c.id
-        self.reload(c.id)
+        self.reload()
+
+
+class AnimCard(QFrame):
+    """Card de una animación: miniatura en movimiento y nombre. Clic abre su detalle; mantener pulsado marca (y en modo selección, el clic marca)."""
+    tapped, held = Signal(str), Signal(str)
+
+    def __init__(self, name: str, c, a: dict | None):
+        super().__init__(objectName="card")
+        self.name, self.frames, self.k, self.acc, self.long = name, [], 0, 0, False
+        self.mode, self.ms = (anim_mode(a), 1000 / a["fps"]) if a else ("loop", 0)
+        self.setFixedWidth(AnimsView.CW)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(sprites.label(name))
+        v = QVBoxLayout(self)
+        v.setContentsMargins(8, 10, 8, 8)
+        v.setSpacing(6)
+        self.pic = QLabel(alignment=Qt.AlignCenter, objectName="dim")
+        self.pic.setFixedHeight(84)
+        if a:
+            self.frames = anim_frames(c, a, 80)
+            self.pic.setPixmap(self.frames[0])
+        else:
+            self.pic.setText("—")
+        lb = QLabel(sprites.label(name), alignment=Qt.AlignCenter, objectName="" if a else "dim")
+        v.addWidget(self.pic)
+        v.addWidget(lb)
+        self.hold = QTimer(self, singleShot=True, interval=500, timeout=self.on_hold)
+
+    def on_hold(self):
+        self.long = True
+        self.held.emit(self.name)
+
+    def advance(self, dt: int):
+        if len(self.frames) < 2:
+            return
+        self.acc += dt
+        steps = int(self.acc // self.ms)
+        if steps:
+            self.acc -= steps * self.ms
+            self.k += steps
+            self.pic.setPixmap(self.frames[frame_index(self.k, len(self.frames), self.mode)])
+
+    def mark(self, on: bool):
+        self.setProperty("active", on)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.long = False
+            self.hold.start()
+
+    def mouseReleaseEvent(self, e):
+        self.hold.stop()
+        if e.button() == Qt.LeftButton and not self.long and self.rect().contains(e.position().toPoint()):
+            self.tapped.emit(self.name)
+
+
+class AnimsView(View):
+    """Animaciones de un personaje como cards con miniatura en movimiento. Tocar una abre su detalle; con el icono de selección (o manteniendo
+    pulsada una card) se marcan varias para generarlas a la vez o eliminarlas."""
+    CW = 136
+
+    def __init__(self, shell):
+        super().__init__(shell)
+        self.cid, self.cards, self.picked, self.selecting, self.cols, self.arm = "", {}, set(), False, 0, False
+        lay = self.page(margins=(28, 18, 28, 18), spacing=14, scroll=True, width=1100)
+        bar = QHBoxLayout()
+        bar.setSpacing(4)
+        self.count = QLabel(objectName="dim")
+        bar.addWidget(self.count)
+        bar.addStretch(1)
+        self.tools = {k: ibtn(ic, tip, fn, nm) for k, ic, tip, fn, nm in (
+            ("all", "checks", "Seleccionar todo", lambda: self.set_picked(set(self.cards)), "ib"),
+            ("none", "x", "Deseleccionar todo", lambda: self.set_picked(set()), "ib"),
+            ("inv", "reset", "Invertir selección", lambda: self.set_picked(set(self.cards) - self.picked), "ib"),
+            ("del", "trash", "Eliminar seleccionadas", self.delete, "ibd"),
+            ("gen", "sparkles", "Generar seleccionadas", self.generate, "ibp"))}
+        for b in self.tools.values():
+            bar.addWidget(b)
+        self.sel_btn = ibtn("check", "Seleccionar", self.toggle_select)
+        bar.addWidget(self.sel_btn)
+        lay.addLayout(bar)
+        host = QWidget()
+        self.grid = QGridLayout(host)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(14)
+        lay.addWidget(host)
+        lay.addStretch(1)
+        self.arm_t = QTimer(self, singleShot=True, interval=3000, timeout=self.disarm)
+        self.timer = QTimer(self, interval=50, timeout=lambda: [c.advance(50) for c in self.cards.values()])
+
+    @property
+    def title(self):
+        return f"Animaciones · {sprites.get(self.cid).name}" if self.cid else "Animaciones"
+
+    def enter(self, cid="", **kw):
+        self.cid = cid or self.cid
+        self.picked, self.selecting = set(), False
+        self.build()
+        self.timer.start()
+
+    def hideEvent(self, e):
+        self.timer.stop()
+        super().hideEvent(e)
+
+    def build(self):
+        c = sprites.get(self.cid)
+        for w in self.cards.values():
+            w.deleteLater()
+        self.cards = {}
+        for n in sorted(c.anims) + [n for n in sprites.WANTED if n not in c.anims]:
+            card = AnimCard(n, c, c.anims.get(n))
+            card.tapped.connect(self.tap)
+            card.held.connect(self.hold)
+            self.cards[n] = card
+        self.cols = 0
+        self.flow()
+        self.sync()
+
+    def flow(self):
+        self.cols = self.reflow(self.grid, list(self.cards.values()), self.CW, self.cols)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.flow()
+
+    # ---- selección ----
+    def tap(self, n):
+        if self.selecting:
+            self.set_picked(self.picked ^ {n})
+        else:
+            self.shell.push("catalog", cid=self.cid, select=n)
+
+    def hold(self, n):
+        self.selecting = True
+        self.set_picked(self.picked | {n})
+
+    def toggle_select(self):
+        self.selecting = not self.selecting
+        self.set_picked(set() if not self.selecting else self.picked)
+
+    def set_picked(self, s):
+        self.picked = s
+        self.disarm()
+
+    def disarm(self):
+        self.arm = False
+        seticon(self.tools["del"], "trash", "Eliminar seleccionadas")
+        self.sync()
+
+    def sync(self):
+        c = sprites.get(self.cid)
+        for n, card in self.cards.items():
+            card.mark(n in self.picked)
+        sel = self.selecting
+        for k in ("all", "none", "inv"):
+            self.tools[k].setVisible(sel)
+        self.tools["gen"].setVisible(bool(self.picked))
+        self.tools["del"].setVisible(any(n in c.anims for n in self.picked))
+        self.count.setText(str(len(self.picked)) if sel else "")
+        seticon(self.sel_btn, "x" if sel else "check", "Salir de la selección" if sel else "Seleccionar")
+
+    # ---- acciones sobre lo seleccionado ----
+    def generate(self):
+        from . import imagegen
+        if not imagegen.provider.image_ready():
+            self.shell.toast("No hay generador de imágenes. Elige el binario de Codex o configura una API en Ajustes.", 5000)
+            return self.shell.open("settings")
+        c = sprites.get(self.cid)
+        if not (c.neutral or c.source or sprites.reference(c)):
+            return self.shell.toast("Carga primero la imagen general del personaje (Editar personaje).", 5000)
+        self.shell.gen.start(self.cid, [n for n in self.cards if n in self.picked])
+        self.shell.push("jobs")
+
+    def delete(self):
+        if not self.arm:  # confirmación en dos pasos: el icono pasa a ✓ y vuelve solo a los 3 s
+            self.arm = True
+            seticon(self.tools["del"], "check", "¿Seguro? Pulsa otra vez")
+            self.arm_t.start()
+            return
+        c = sprites.get(self.cid)
+        gone = [n for n in self.picked if n in c.anims]
+        for n in gone:
+            sprites.remove(self.cid, n)
+        self.pet.refresh_character(sprites.get(self.cid))
+        self.shell.toast(f"{len(gone)} eliminada(s)")
+        self.picked, self.arm = set(), False
+        self.build()
 
 
 class CatalogView(View):
-    """Catálogo de animaciones de un personaje: vista previa, ajustes al vuelo, probar, reemplazar, eliminar y agregar las que faltan."""
+    """Animaciones de un personaje: lista a un lado y, al otro, vista previa con las acciones como iconos (el nombre sale al pasar el cursor)."""
 
     def __init__(self, shell):
         super().__init__(shell)
@@ -296,65 +524,50 @@ class CatalogView(View):
         main = QHBoxLayout(self)
         main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(0)
-        side = QFrame(objectName="side")
-        side.setFixedWidth(240)
-        sv = QVBoxLayout(side)
-        sv.setContentsMargins(0, 14, 0, 14)
-        sv.addWidget(QLabel("  ANIMACIONES", objectName="section"))
-        self.list = QListWidget()
-        sv.addWidget(self.list, 1)
-        main.addWidget(side)
         right = QVBoxLayout()
-        right.setContentsMargins(24, 20, 24, 20)
+        right.setContentsMargins(24, 18, 24, 18)
         right.setSpacing(12)
         card = QFrame(objectName="card")
         cv = QVBoxLayout(card)
-        self.view = QLabel(alignment=Qt.AlignCenter)
+        self.view = QLabel(alignment=Qt.AlignCenter, objectName="dim")
         self.view.setMinimumHeight(250)
         cv.addWidget(self.view)
         right.addWidget(card, 1)
+        head = QHBoxLayout()
         self.name = QLabel(objectName="h1")
         self.info = QLabel(objectName="dim")
-        self.info.setWordWrap(True)
-        right.addWidget(self.name)
-        right.addWidget(self.info)
-        row = QHBoxLayout()
         self.fps, self.mode = QSpinBox(), QComboBox()
         self.fps.setRange(1, 30)
         self.fps.setSuffix(" fps")
+        self.fps.setFixedWidth(76)
         self.mode.addItems(["loop", "pingpong", "once"])
-        row.addWidget(self.fps)
-        row.addWidget(self.mode)
-        row.addStretch(1)
-        right.addLayout(row)
+        self.mode.setFixedWidth(100)
+        head.addWidget(self.name)
+        head.addWidget(self.info, 1)
+        head.addWidget(self.fps)
+        head.addWidget(self.mode)
+        right.addLayout(head)
         acts = QHBoxLayout()
-        self.btns = {k: button(lab, fn, nm) for k, lab, fn, nm in (("test", "▶  Probar en la mascota", self.test, "primary"),
-                     ("replace", "Reemplazar", self.replace, None), ("prompt", "Prompt", self.prompt, "ghost"), ("delete", "Eliminar", self.delete, "danger"))}
-        for b in self.btns.values():
-            acts.addWidget(b)
-        right.addLayout(acts)
-        gen = QHBoxLayout()
-        self.btns["gen"] = button("✨  Generar con ChatGPT", self.generate, "primary")
-        self.btns["cancel"] = button("Cancelar", self.cancel_gen, "danger")
+        acts.setSpacing(4)
+        self.btns = {k: ibtn(ic, tip, fn, nm) for k, ic, tip, fn, nm in (
+            ("test", "play", "Probar en la mascota", self.test, "ibp"), ("replace", "upload", "Reemplazar", self.replace, "ib"),
+            ("prompt", "file", "Prompt", self.prompt, "ib"), ("delete", "trash", "Eliminar", self.delete, "ibd"),
+            ("gen", "sparkles", "Generar con ChatGPT", self.generate, "ibp"), ("cancel", "x", "Cancelar generación", self.cancel_gen, "ibd"),
+            ("improve", "wand", "Mejorar con chat", self.improve, "ib"))}
         self.btns["cancel"].hide()
-        gen.addWidget(self.btns["gen"])
-        gen.addWidget(self.btns["cancel"])
-        self.btns["many"] = button("Generar varias…", self.many, None)
-        gen.addWidget(self.btns["many"])
-        self.btns["improve"] = button("Mejorar con chat", self.improve, None)
-        gen.addWidget(self.btns["improve"])
-        self.btns["all"] = button("Prompt general de las faltantes", self.all_prompt, "ghost")
-        gen.addWidget(self.btns["all"])
-        right.addLayout(gen)
+        for k in ("test", "replace", "prompt", "delete"):
+            acts.addWidget(self.btns[k])
+        acts.addStretch(1)
+        for k in ("cancel", "improve", "gen"):
+            acts.addWidget(self.btns[k])
+        right.addLayout(acts)
         self.status = QLabel(objectName="hint")
-        self.status.setWordWrap(True)
         right.addWidget(self.status)
         self.job = Bg()
         self.job.msg.connect(self.status.setText)
         main.addLayout(right, 1)
         self.timer = QTimer(self, timeout=self.tick)
         self.arm_t = QTimer(self, singleShot=True, timeout=self.disarm)
-        self.list.currentRowChanged.connect(self.pick)
         self.fps.valueChanged.connect(self.autosave)
         self.mode.currentIndexChanged.connect(self.autosave)
 
@@ -376,27 +589,16 @@ class CatalogView(View):
         return sorted(c.anims) + [n for n in sprites.WANTED if n not in c.anims]
 
     def refresh(self, select=None):
-        c = self.char()
-        self.list.blockSignals(True)
-        self.list.clear()
-        for n in self.names():
-            a = c.anims.get(n)
-            it = QListWidgetItem(f"{sprites.label(n)}    {a['frames']}" if a else f"{sprites.label(n)}    —")
-            if not a:
-                it.setForeground(QColor("#6a6a7c"))
-            self.list.addItem(it)
-        self.list.blockSignals(False)
         names = self.names()
-        self.list.setCurrentRow(names.index(select) if select in names else 0)
-        self.pick(self.list.currentRow())
+        self.sel = select if select in names else (names[0] if names else None)
+        self.pick()
 
     def cur(self):
-        i = self.list.currentRow()
-        return self.names()[i] if i >= 0 else None
+        return self.sel
 
     def disarm(self):
         self.arm = None
-        self.btns["delete"].setText("Eliminar")
+        seticon(self.btns["delete"], "trash", "Eliminar")
 
     def pick(self, _=0):
         n, c = self.cur(), self.char()
@@ -406,12 +608,9 @@ class CatalogView(View):
         self.timer.stop()
         for k in ("test", "delete"):
             self.btns[k].setEnabled(bool(a))
-        self.btns["replace"].setText("Reemplazar" if a else "Agregar…")
-        self.btns["gen"].setText("✨  Regenerar con ChatGPT" if a else "✨  Generar con ChatGPT")
+        self.btns["replace"].setToolTip("Reemplazar" if a else "Agregar…")
+        self.btns["gen"].setToolTip("Regenerar con ChatGPT" if a else "Generar con ChatGPT")
         self.btns["improve"].setEnabled(bool(a))
-        missing = [x for x in sprites.WANTED if x not in c.anims]
-        self.btns["all"].setText(f"Prompt general de las {len(missing)} faltantes" if missing else "Prompt general (no falta ninguna)")
-        self.btns["all"].setEnabled(bool(missing))
         for wd in (self.fps, self.mode):
             wd.setEnabled(bool(a))
         w = sprites.WANTED.get(n)
@@ -419,20 +618,17 @@ class CatalogView(View):
         if not a:
             self.frames = []
             self.view.setPixmap(QPixmap())
-            self.view.setText("Aún no tiene esta animación")
-            self.info.setText(f"{w[1].capitalize()}. Mientras tanto usa «{w[3]}»." if w and w[3] else (w[1].capitalize() if w else ""))
+            self.view.setText("—")
+            self.info.setText(w[1].capitalize() if w else "")
             return
-        pm = QPixmap(str(a["sheet"]))
-        cw, ch = c.cell
-        cols = max(1, pm.width() // cw)
-        self.frames = [pm.copy((i % cols) * cw, (a["row"] + i // cols) * ch, cw, ch).scaledToHeight(240, Qt.SmoothTransformation) for i in range(a["frames"])]
+        self.frames = anim_frames(c, a, 240)
         for wd in (self.fps, self.mode):
             wd.blockSignals(True)
         self.fps.setValue(a["fps"])
-        self.mode.setCurrentText("pingpong" if a.get("pingpong") else ("loop" if a.get("loop", True) else "once"))
+        self.mode.setCurrentText(anim_mode(a))
         for wd in (self.fps, self.mode):
             wd.blockSignals(False)
-        self.info.setText(f"{a['frames']} cuadro{'s' if a['frames'] != 1 else ''}" + (f" · {w[1]}" if w else ""))
+        self.info.setText((f"{w[1].capitalize()} · " if w else "") + f"{a['frames']} cuadros")
         self.k = 0
         self.view.setText("")
         self.timer.start(int(1000 / a["fps"]))
@@ -440,15 +636,8 @@ class CatalogView(View):
     def tick(self):
         if not self.frames:
             return
-        n, mode = len(self.frames), self.mode.currentText()
         self.k += 1
-        i = self.k % n
-        if mode == "pingpong" and n > 1:
-            m = self.k % (2 * n - 2)
-            i = m if m < n else 2 * n - 2 - m
-        elif mode == "once":
-            i = min(self.k, n - 1)
-        self.view.setPixmap(self.frames[i])
+        self.view.setPixmap(self.frames[frame_index(self.k, len(self.frames), self.mode.currentText())])
 
     def changed(self, select=None):
         self.pet.refresh_character(self.char())
@@ -481,7 +670,7 @@ class CatalogView(View):
         n = self.cur()
         if self.arm != n:  # confirmación en dos pasos, sin ventanas emergentes
             self.arm = n
-            self.btns["delete"].setText("¿Seguro? Pulsa otra vez")
+            seticon(self.btns["delete"], "check", "¿Seguro? Pulsa otra vez")
             self.arm_t.start(3000)
             return
         sprites.remove(self.cid, n)
@@ -490,12 +679,6 @@ class CatalogView(View):
 
     def prompt(self):
         self.shell.push("prompt", cid=self.cid, anim=self.cur())
-
-    def all_prompt(self):
-        self.shell.push("allprompt", cid=self.cid)
-
-    def many(self):
-        self.shell.push("genbatch", cid=self.cid)
 
     def improve(self):
         self.shell.push("refine", cid=self.cid, target=self.cur())
@@ -549,10 +732,10 @@ class PromptView(View):
         self.bg.setEditable(True)
         self.bg.addItems(["#FF00FF", "", "#00FF00", "blanco sólido", "negro sólido"])  # el generador no da transparencia real: se usa croma y se recorta
         self.bg.setCurrentText(store.get("prompt_bg", "#FF00FF"))
-        self.bg.lineEdit().setPlaceholderText("vacío = transparente")
+        self.bg.lineEdit().setPlaceholderText("transparente")
         self.dist, self.dir, self.action, self.extra = QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit()
-        self.dist.setPlaceholderText("vacío = automática (p. ej. 4 columnas × 2 filas)")
-        self.dir.setPlaceholderText("vacío = la orientación de la referencia")
+        self.dist.setPlaceholderText("automática")
+        self.dir.setPlaceholderText("la de la referencia")
         self.extra.setPlaceholderText("opcional")
         for lab, w in (("Animación", self.anim), ("Cuadros", self.frames), ("Fondo", self.bg), ("Distribución", self.dist), ("Dirección", self.dir),
                        ("Movimiento", self.action), ("Detalles", self.extra)):
@@ -561,13 +744,13 @@ class PromptView(View):
         self.text = QPlainTextEdit()
         lay.addWidget(self.text, 1)
         row = QHBoxLayout()
-        self.gen_btn = button("✨  Generar con ChatGPT", self.generate, "primary")
-        self.cancel_btn = button("Cancelar", self.cancel_gen, "danger")
+        self.gen_btn = ibtn("sparkles", "Generar con ChatGPT", self.generate, "ibp")
+        self.cancel_btn = ibtn("x", "Cancelar", self.cancel_gen, "ibd")
         self.cancel_btn.hide()
         row.addWidget(self.gen_btn)
         row.addWidget(self.cancel_btn)
-        row.addWidget(button("⧉  Copiar prompt", self.copy))
-        row.addWidget(button("Guardar imagen de referencia", self.ref, "ghost"))
+        row.addWidget(ibtn("copy", "Copiar prompt", self.copy))
+        row.addWidget(ibtn("image", "Guardar imagen de referencia", self.ref))
         row.addStretch(1)
         lay.addLayout(row)
         self.status = QLabel(objectName="hint")
@@ -654,10 +837,10 @@ class ReviewView(View):
         self.text.setStyleSheet("font-family:monospace;")
         lay.addWidget(self.text, 1)
         row = QHBoxLayout()
-        row.addWidget(button("Aplicar", self.apply, "primary"))
-        self.improve_btn = button("Mejorar con chat", self.improve)
+        row.addWidget(ibtn("check", "Aplicar", self.apply, "ibp"))
+        self.improve_btn = ibtn("wand", "Mejorar con chat", self.improve)
         row.addWidget(self.improve_btn)
-        row.addWidget(button("Cancelar", lambda: self.shell.back()))
+        row.addWidget(ibtn("x", "Cancelar", lambda: self.shell.back()))
         row.addStretch(1)
         lay.addLayout(row)
 
@@ -669,8 +852,8 @@ class ReviewView(View):
         total = sum(len(r) for r in plan["rows"])
         wr = f"\n⚠ {plan['warning']}" if plan.get("warning") else ""
         warn = wr + f"\n⚠ Se esperaban {plan['expected']} cuadros y detecté {total}." if plan.get("expected") and plan["expected"] != total else ""
-        self.head.setText(f"{n} fila(s) de cuadros detectadas ({[len(r) for r in plan['rows']]})" + (" · propuesta de la IA" if plan["ai"] else "")
-                          + ".\nUna por línea: nombre | fps | modo (loop, pingpong, once) | filas (desde 0). Borra una línea para omitirla." + warn)
+        self.head.setText(f"{n} fila(s) {[len(r) for r in plan['rows']]}" + (" · IA" if plan["ai"] else "") + "\nnombre | fps | modo | filas" + warn)
+        self.text.setToolTip("Una por línea: nombre | fps | modo (loop, pingpong, once) | filas (desde 0). Borra una línea para omitirla.")
         pm = QPixmap(plan["raw"]).scaled(720, 170, Qt.KeepAspectRatio, Qt.SmoothTransformation) if plan.get("raw") else QPixmap()
         self.shot.setPixmap(pm)
         self.shot.setVisible(bool(plan.get("raw")))
@@ -711,17 +894,17 @@ class NewCharView(View):
         form.setVerticalSpacing(10)
         self.name, self.size = QLineEdit(), QLineEdit("192x208")
         self.desc = QPlainTextEdit()
-        self.desc.setPlaceholderText("Descripción visual: la usan los prompts para mantener la identidad")
+        self.desc.setPlaceholderText("Descripción visual")
         self.desc.setFixedHeight(120)
         form.addRow(QLabel("Nombre", objectName="dim"), self.name)
         form.addRow(QLabel("Descripción", objectName="dim"), self.desc)
         form.addRow(QLabel("Celda (ancho×alto)", objectName="dim"), self.size)
         self.src_path = ""
-        self.src_btn = button("Elegir imagen general (opcional)…", self.pick_src)
+        self.src_btn = button("Elegir…", self.pick_src)
         form.addRow(QLabel("Imagen general", objectName="dim"), self.src_btn)
         lay.addLayout(form)
         row = QHBoxLayout()
-        row.addWidget(button("Crear personaje", self.create, "primary"))
+        row.addWidget(ibtn("check", "Crear personaje", self.create, "ibp"))
         row.addStretch(1)
         lay.addLayout(row)
         lay.addStretch(1)
@@ -736,7 +919,7 @@ class NewCharView(View):
         self.name.clear()
         self.desc.clear()
         self.src_path = ""
-        self.src_btn.setText("Elegir imagen general (opcional)…")
+        self.src_btn.setText("Elegir…")
         self.name.setFocus()
 
     def create(self):
@@ -754,7 +937,7 @@ class NewCharView(View):
                 self.shell.toast(str(e), 5000)
         self.shell.views["chars"].sel = c.id
         self.shell.back()
-        self.shell.toast(f"Creado: {c.name} · pulsa «Usar este personaje» para activarlo", 4500)
+        self.shell.toast(f"Creado: {c.name}", 3000)
 
 
 class RefsView(View):
@@ -766,48 +949,40 @@ class RefsView(View):
         super().__init__(shell)
         self.cid, self.job = "", Bg()
         lay = self.page(spacing=12, scroll=True)
-        hint = QLabel("La hoja neutral (frontal, trasera y dos laterales) es la base que se adjunta al generar cualquier animación para mantener "
-                      "todos los detalles. Si generas una animación y no existe, se crea primero a partir de la imagen general.", objectName="dim")
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
         cards = QHBoxLayout()
         cards.setSpacing(14)
-        self.src_pic, self.src_info = QLabel(alignment=Qt.AlignCenter), QLabel(objectName="dim")
-        self.neu_pic, self.neu_info = QLabel(alignment=Qt.AlignCenter), QLabel(objectName="dim")
-        cards.addLayout(self.card("IMAGEN GENERAL", self.src_pic, self.src_info,
-                                  (("Cargar imagen…", self.load_src, None),
-                                   ("Guardar…", lambda: self.save_ref("source"), "ghost"), ("Quitar", self.clear_src, "danger"))), 1)
-        self.gen_btn = button("✨  Generar con ChatGPT", self.gen_neutral, "primary")
-        self.improve_btn = button("Mejorar con chat", self.improve_neutral)
-        self.neu_btns = (self.gen_btn, self.improve_btn, button("Prompt", self.neutral_prompt, "ghost"), button("Cargar propia…", self.load_neutral, "ghost"),
-                         button("Guardar…", lambda: self.save_ref("neutral"), "ghost"), button("Quitar", self.clear_neutral, "danger"))
-        cards.addLayout(self.card("HOJA NEUTRAL · 4 VISTAS", self.neu_pic, self.neu_info, None, self.neu_btns), 2)
+        self.src_pic, self.neu_pic = QLabel(alignment=Qt.AlignCenter, objectName="dim"), QLabel(alignment=Qt.AlignCenter, objectName="dim")
+        cards.addLayout(self.card("IMAGEN GENERAL", self.src_pic, (ibtn("upload", "Cargar imagen…", self.load_src), ibtn("download", "Guardar…", lambda: self.save_ref("source")),
+                                                                 ibtn("trash", "Quitar", self.clear_src, "ibd"))), 1)
+        self.gen_btn = ibtn("sparkles", "Generar con ChatGPT", self.gen_neutral, "ibp")
+        self.improve_btn = ibtn("wand", "Mejorar con chat", self.improve_neutral)
+        self.neu_btns = (self.gen_btn, self.improve_btn, ibtn("file", "Prompt", self.neutral_prompt), ibtn("upload", "Cargar propia…", self.load_neutral),
+                         ibtn("download", "Guardar…", lambda: self.save_ref("neutral")), ibtn("trash", "Quitar", self.clear_neutral, "ibd"))
+        cards.addLayout(self.card("HOJA NEUTRAL · 4 VISTAS", self.neu_pic, self.neu_btns), 2)
         lay.addLayout(cards, 1)
-        self.cancel_btn = button("Cancelar generación", self.cancel, "danger")
+        self.cancel_btn = ibtn("x", "Cancelar generación", self.cancel, "ibd")
         self.cancel_btn.hide()
-        lay.addWidget(self.cancel_btn)
+        lay.addWidget(self.cancel_btn, 0, Qt.AlignLeft)
         self.status = QLabel(objectName="hint")
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
         self.codex = QLabel(objectName="hint")
         lay.addWidget(self.codex)
         self.job.msg.connect(self.status.setText)
-        lay.addWidget(QLabel("NOMBRE Y DETALLES", objectName="h1"))
         self.prof = ProfileView(shell, lay)  # sus campos van en esta misma página
 
-    def card(self, title, pic, info, specs, buttons=None):
+    def card(self, title, pic, buttons):
         box = QFrame(objectName="card")
         v = QVBoxLayout(box)
         v.setContentsMargins(14, 12, 14, 12)
         v.addWidget(QLabel(title, objectName="section"))
         pic.setMinimumHeight(170)
         v.addWidget(pic, 1)
-        info.setWordWrap(True)
-        info.setMinimumHeight(40)
-        v.addWidget(info)
-        row = QGridLayout()  # en cuadrícula: con 5 botones en una fila los textos se cortaban
-        for i, b in enumerate(buttons or [button(lab, fn, nm) for lab, fn, nm in specs]):
-            row.addWidget(b, i // 3, i % 3)
+        row = QHBoxLayout()
+        row.setSpacing(2)
+        for b in buttons:
+            row.addWidget(b)
+        row.addStretch(1)
         v.addLayout(row)
         wrap = QVBoxLayout()
         wrap.addWidget(box)
@@ -828,7 +1003,7 @@ class RefsView(View):
 
     def refresh(self):
         c = self.char()
-        for pic, f, w, h, empty in ((self.src_pic, c.source, 200, 170, "Sin imagen general"), (self.neu_pic, c.neutral, 430, 170, "Aún no hay hoja neutral")):
+        for pic, f, w, h, empty in ((self.src_pic, c.source, 200, 170, "—"), (self.neu_pic, c.neutral, 430, 170, "—")):
             pm = QPixmap(str(f)) if f else QPixmap()
             if f and not pm.isNull():
                 pic.setPixmap(pm.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -836,10 +1011,7 @@ class RefsView(View):
             else:
                 pic.setPixmap(QPixmap())
                 pic.setText(empty)
-        self.src_info.setText("Referencia de identidad: de aquí salen las 4 vistas." if c.source else "Cárgala para poder generar la hoja neutral.")
-        self.neu_info.setText("Orden: frontal · trasera · lateral izquierda · lateral derecha." if c.neutral else
-                              ("Lista para generarla con ChatGPT." if (c.source or sprites.reference(c)) else "Carga primero la imagen general."))
-        self.gen_btn.setText("✨  Regenerar" if c.neutral else "✨  Generar")
+        self.gen_btn.setToolTip("Regenerar con ChatGPT" if c.neutral else "Generar con ChatGPT (4 vistas: frontal, trasera y laterales)")
         self.improve_btn.setEnabled(bool(c.neutral))
         self.gen_btn.setEnabled(bool(c.source or sprites.reference(c)) and not self.cancel_btn.isVisible())
 
@@ -912,84 +1084,6 @@ class RefsView(View):
         self.shell.toast("Hoja neutral generada")
 
 
-class AllPromptView(View):
-    """Un solo prompt para pedir varias animaciones: cada una como imagen separada, con sus propias variables."""
-    title = "Prompt general de animaciones"
-
-    def __init__(self, shell):
-        super().__init__(shell)
-        self.c = None
-        lay = self.page(spacing=10)
-        hint = QLabel("Elige las animaciones. El prompt pide una imagen independiente por cada una y respeta las variables de cada una "
-                      "(cuadros, distribución, movimiento…). Edítalo si quieres antes de copiarlo.", objectName="dim")
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
-        top = QHBoxLayout()
-        self.list = QListWidget()
-        self.list.setMaximumHeight(190)
-        self.list.setStyleSheet("QListWidget::item{padding:4px 10px;margin:1px 4px}")
-        top.addWidget(self.list, 2)
-        side = QVBoxLayout()
-        self.bg = QComboBox()
-        self.bg.setEditable(True)
-        self.bg.addItems(["#FF00FF", "", "#00FF00", "blanco sólido", "negro sólido"])
-        self.bg.setCurrentText(store.get("prompt_bg", "#FF00FF"))
-        side.addWidget(QLabel("Fondo", objectName="dim"))
-        side.addWidget(self.bg)
-        side.addWidget(button("Marcar todas", lambda: self.mark(True), "ghost"))
-        side.addWidget(button("Quitar todas", lambda: self.mark(False), "ghost"))
-        side.addStretch(1)
-        top.addLayout(side, 1)
-        lay.addLayout(top)
-        self.count = QLabel(objectName="hint")
-        lay.addWidget(self.count)
-        self.text = QPlainTextEdit()
-        lay.addWidget(self.text, 1)
-        row = QHBoxLayout()
-        row.addWidget(button("⧉  Copiar prompt general", self.copy, "primary"))
-        row.addStretch(1)
-        lay.addLayout(row)
-        self.list.itemChanged.connect(self.build)
-        self.bg.currentTextChanged.connect(self.build)
-
-    def enter(self, cid="", **kw):
-        self.c = sprites.get(cid)
-        self.list.blockSignals(True)
-        self.list.clear()
-        for n in (x for x in sprites.WANTED if x not in self.c.anims):
-            it = QListWidgetItem(f"{sprites.label(n)}  ·  {sprites.WANTED[n][1]}")
-            it.setData(Qt.UserRole, n)
-            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
-            it.setCheckState(Qt.Checked)
-            self.list.addItem(it)
-        self.list.blockSignals(False)
-        self.build()
-
-    def names(self):
-        return [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count()) if self.list.item(i).checkState() == Qt.Checked]
-
-    def mark(self, on: bool):
-        self.list.blockSignals(True)
-        for i in range(self.list.count()):
-            self.list.item(i).setCheckState(Qt.Checked if on else Qt.Unchecked)
-        self.list.blockSignals(False)
-        self.build()
-
-    def build(self, *_):
-        names = self.names()
-        self.count.setText(f"{len(names)} animación(es) seleccionada(s)")
-        self.text.setPlainText(sprites.general_prompt(self.c, names, self.bg.currentText().strip()) if names and self.c else "")
-
-    def copy(self):
-        n = len(self.names())
-        if not n:
-            return self.shell.toast("Marca al menos una animación")
-        copy_text(self.text.toPlainText())
-        self.pet.say("¡Prompt general copiado! ✓", 3000)
-        self.shell.back()
-        self.shell.toast(f"Prompt general copiado ✓ ({n} animaciones)")
-
-
 class NeutralPromptView(View):
     """Prompt para generar la hoja neutral (4 vistas) en cualquier generador de imágenes; se adjunta la imagen general como referencia."""
     title = "Prompt de la hoja neutral"
@@ -998,10 +1092,6 @@ class NeutralPromptView(View):
         super().__init__(shell)
         self.c = None
         lay = self.page(spacing=10)
-        hint = QLabel("Adjunta al generador la imagen general del personaje. El resultado tiene que traer las 4 vistas (frontal, trasera, lateral "
-                      "izquierda y lateral derecha); luego cárgalo con «Cargar propia…».", objectName="dim")
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
         form = QFormLayout()
         form.setVerticalSpacing(8)
         self.bg = QComboBox()
@@ -1009,15 +1099,15 @@ class NeutralPromptView(View):
         self.bg.addItems(["#FF00FF", "", "#00FF00", "blanco sólido", "negro sólido"])
         self.bg.setCurrentText(store.get("prompt_bg", "#FF00FF"))
         self.extra = QLineEdit()
-        self.extra.setPlaceholderText("detalles adicionales (opcional)")
+        self.extra.setPlaceholderText("opcional")
         form.addRow(QLabel("Fondo", objectName="dim"), self.bg)
         form.addRow(QLabel("Detalles", objectName="dim"), self.extra)
         lay.addLayout(form)
         self.text = QPlainTextEdit()
         lay.addWidget(self.text, 1)
         row = QHBoxLayout()
-        row.addWidget(button("⧉  Copiar prompt", self.copy, "primary"))
-        row.addWidget(button("Ver imagen general", self.show_src, "ghost"))
+        row.addWidget(ibtn("copy", "Copiar prompt", self.copy, "ibp"))
+        row.addWidget(ibtn("image", "Ver imagen general", self.show_src))
         row.addStretch(1)
         lay.addLayout(row)
         self.bg.currentTextChanged.connect(self.build)
@@ -1049,116 +1139,130 @@ class SettingsView(View):
     def __init__(self, shell):
         super().__init__(shell)
         self.job = Bg()
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea(widgetResizable=True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.bins, self.apis = {}, {}
+        main = QHBoxLayout(self)
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(0)
+        rail = QFrame(objectName="side")  # categorías como iconos: cada una es una página corta
+        rail.setFixedWidth(64)
+        rv = QVBoxLayout(rail)
+        rv.setContentsMargins(10, 12, 10, 12)
+        rv.setSpacing(6)
+        self.pages, cats = QStackedWidget(), QButtonGroup(self)
+        main.addWidget(rail)
+        main.addWidget(self.pages, 1)
+        for i, (ic, tip, build) in enumerate((("chat", "Chat", self.page_chat), ("sparkles", "IA", self.page_ai), ("user", "Mascota", self.page_pet),
+                                              ("mic", "Voz", self.page_voice), ("image", "Imágenes", self.page_images), ("link", "Otro equipo", self.page_link))):
+            b = QPushButton(objectName="tab", cursor=Qt.PointingHandCursor, checkable=True, toolTip=tip, icon=icons.icon(ic))
+            b.setFixedSize(44, 44)
+            b.setIconSize(QSize(20, 20))
+            cats.addButton(b, i)
+            rv.addWidget(b)
+            self.pages.addWidget(self.scroller(tip, build))
+        cats.idClicked.connect(self.pages.setCurrentIndex)
+        cats.button(0).setChecked(True)
+        rv.addStretch(1)
+        rv.addWidget(ibtn("reset", "Restablecer ajustes", self.reset, "ibd"), 0, Qt.AlignHCenter)
+        for w in (self.model, self.effort):
+            w.currentTextChanged.connect(self.save_chat)
+        for w in (self.term, self.see, self.ctl, self.web):
+            w.toggled.connect(self.save_chat)
+
+    # ---- armado: páginas cortas, cada una con grupos (cards) de filas «nombre … control» ----
+    def scroller(self, title: str, build) -> QScrollArea:
+        area = QScrollArea(widgetResizable=True)
+        area.setFrameShape(QFrame.NoFrame)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         body = QWidget(objectName="body")
-        scroll.setWidget(body)
-        outer.addWidget(scroll)
+        area.setWidget(body)
         wrap = QHBoxLayout(body)
         inner = QWidget()
-        inner.setMaximumWidth(760)
+        inner.setMaximumWidth(620)
         wrap.addStretch(1)
         wrap.addWidget(inner, 100)
         wrap.addStretch(1)
         lay = QVBoxLayout(inner)
-        lay.setContentsMargins(32, 24, 32, 24)
-        lay.setSpacing(10)
-        # binarios
-        lay.addWidget(QLabel("BINARIOS", objectName="section"))
-        self.bins = {}
-        for tool, label, hint in (("claude", "Chat (Claude Code CLI)", "Responde en el chat, las ideas y analiza las hojas de sprites."),
-                                  ("codex", "Generador de imágenes (Codex CLI · ChatGPT)", "Genera las animaciones y la hoja neutral.")):
-            lay.addWidget(self.binary_row(tool, label, hint))
-        # IA por API (alternativa a los binarios)
-        lay.addSpacing(10)
-        lay.addWidget(QLabel("IA POR API", objectName="section"))
-        self.apis = {}
-        for what, label in (("chat", "Chat, ideas y análisis de hojas"), ("image", "Generador de imágenes")):
-            lay.addWidget(self.api_row(what, label))
-        # general
-        lay.addSpacing(10)
-        lay.addWidget(QLabel("MASCOTA", objectName="section"))
-        row = QHBoxLayout()
-        self.size = QSlider(Qt.Horizontal)
-        self.size.setRange(30, 120)
-        self.size.setValue(int(store.get("scale", 0.6) * 100))
-        self.size_lb = QLabel(objectName="dim")
-        self.size_lb.setFixedWidth(50)
-        row.addWidget(QLabel("Tamaño"))
-        row.addWidget(self.size, 1)
-        row.addWidget(self.size_lb)
-        lay.addLayout(row)
-        self.size.valueChanged.connect(lambda v: self.size_lb.setText(f"{v}%"))
-        self.size.sliderReleased.connect(self.apply_size)
-        self.size_lb.setText(f"{self.size.value()}%")
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Monitores donde puede andar"), 1)
-        ident = QPushButton("Identificar")
-        ident.setToolTip("Muestra el número de cada monitor en su pantalla")
-        ident.clicked.connect(self.identify)
-        row.addWidget(ident)
-        lay.addLayout(row)
-        self.mon_box = QVBoxLayout()
-        lay.addLayout(self.mon_box)
-        self.fill_monitors()
-        QApplication.instance().screenAdded.connect(self.fill_monitors)
-        QApplication.instance().screenRemoved.connect(self.fill_monitors)
-        lay.addSpacing(10)
-        lay.addWidget(QLabel("GENERACIÓN", objectName="section"))
-        row = QHBoxLayout()
-        self.par = QSpinBox()
-        self.par.setRange(1, 6)
-        self.par.setValue(int(store.get("parallel", 3)))
-        self.par.valueChanged.connect(lambda v: store.put("parallel", v))
-        hint = QLabel("generaciones a la vez al elegir varias (más es más rápido pero gasta más cuota)", objectName="dim")
-        hint.setWordWrap(True)
-        row.addWidget(QLabel("En paralelo"))
-        row.addWidget(self.par)
-        row.addWidget(hint, 1)
-        lay.addLayout(row)
-        lay.addSpacing(10)
-        lay.addWidget(QLabel("PROMPTS", objectName="section"))
-        row = QHBoxLayout()
-        self.bg = QComboBox()
-        self.bg.setEditable(True)
-        self.bg.addItems(["#FF00FF", "", "#00FF00", "blanco sólido", "negro sólido"])
-        self.bg.setCurrentText(store.get("prompt_bg", "#FF00FF"))
-        self.bg.currentTextChanged.connect(lambda t: store.put("prompt_bg", t.strip()))
-        row.addWidget(QLabel("Fondo por defecto"))
-        row.addWidget(self.bg, 1)
-        lay.addLayout(row)
-        lay.addSpacing(10)
-        lay.addWidget(QLabel("CHAT", objectName="section"))
-        row = QHBoxLayout()
+        lay.setContentsMargins(28, 24, 28, 28)
+        lay.setSpacing(16)
+        lay.addWidget(QLabel(title, objectName="h1"))
+        build(lay)
+        lay.addStretch(1)
+        return area
+
+    @staticmethod
+    def group(*items) -> QFrame:
+        box = QFrame(objectName="card")
+        v = QVBoxLayout(box)
+        v.setContentsMargins(16, 14, 16, 14)
+        v.setSpacing(14)
+        for it in items:
+            v.addLayout(it) if isinstance(it, QLayout) else v.addWidget(it)
+        return box
+
+    @staticmethod
+    def row(label: str, w: QWidget, grow=False) -> QHBoxLayout:
+        r = QHBoxLayout()
+        r.addWidget(QLabel(label, toolTip=w.toolTip()), 1)
+        r.addWidget(w, 2 if grow else 0)
+        return r
+
+    def page_chat(self, lay):
         self.model, self.effort = QComboBox(), QComboBox()
         for cb, items in ((self.model, ("haiku", "sonnet", "opus")), (self.effort, ("low", "medium", "high"))):
             cb.addItems(items)
-        self.term = QCheckBox("Permitir que ejecute comandos (Terminal)")
-        for lab, w in (("Modelo", self.model), ("Esfuerzo", self.effort)):
-            row.addWidget(QLabel(lab))
-            row.addWidget(w)
-        lay.addLayout(row)
-        lay.addWidget(self.term)
-        lay.addSpacing(10)
-        lay.addWidget(QLabel("VOZ", objectName="section"))
-        self.voice = QCheckBox("Escuchar su nombre: al oírlo, dicta tu pedido por voz y trabaja como asistente (reconocimiento local; baja el modelo la primera vez)")
+            cb.setFixedWidth(130)
+        self.term = QCheckBox(toolTip="Permitir que el chat ejecute comandos")
+        self.see = QCheckBox(toolTip="Toma una captura de la ventana activa antes de responder")
+        self.ctl = QCheckBox(toolTip="Ratón, teclado y ventanas: acciones reales en tu equipo. macOS pide permisos de Accesibilidad y de Grabación de pantalla; "
+                             "en Wayland puede no funcionar (usa X11). Cada acción queda en ~/.fruquis/ctl.log")
+        self.web = QCheckBox(toolTip="Controlar tu navegador (pestañas, páginas, formularios) con la extensión Claude in Chrome. Más lento al arrancar")
+        lay.addWidget(self.group(self.row("Modelo", self.model), self.row("Esfuerzo", self.effort)))
+        lay.addWidget(self.group(self.row("Terminal", self.term), self.row("Ver ventana", self.see), self.row("Controlar escritorio", self.ctl),
+                                 self.row("Navegador", self.web)))
+
+    def page_ai(self, lay):
+        for tool, label, hint in (("claude", "Chat (Claude Code CLI)", "Responde en el chat, las ideas y analiza las hojas de sprites."),
+                                  ("codex", "Imágenes (Codex CLI · ChatGPT)", "Genera las animaciones y la hoja neutral.")):
+            lay.addWidget(self.binary_row(tool, label, hint))
+        for what, label in (("chat", "Chat por API"), ("image", "Imágenes por API")):
+            lay.addWidget(self.api_row(what, label))
+
+    def page_pet(self, lay):
+        self.size = QSlider(Qt.Horizontal)
+        self.size.setRange(30, 120)
+        self.size.setValue(int(store.get("scale", 0.6) * 100))
+        self.size_lb = QLabel(f"{self.size.value()}%", objectName="dim")
+        self.size_lb.setFixedWidth(44)
+        self.size.valueChanged.connect(lambda v: self.size_lb.setText(f"{v}%"))
+        self.size.sliderReleased.connect(self.apply_size)
+        size = QHBoxLayout()
+        size.addWidget(QLabel("Tamaño"))
+        size.addWidget(self.size, 1)
+        size.addWidget(self.size_lb)
+        lay.addWidget(self.group(size))
+        head = QHBoxLayout()
+        head.addWidget(QLabel("Monitores donde anda"), 1)
+        head.addWidget(ibtn("monitor", "Identificar: muestra el número de cada monitor en su pantalla", self.identify))
+        self.mon_box = QVBoxLayout()
+        self.mon_box.setSpacing(10)
+        lay.addWidget(self.group(head, self.mon_box))
+        self.fill_monitors()
+        QApplication.instance().screenAdded.connect(self.fill_monitors)
+        QApplication.instance().screenRemoved.connect(self.fill_monitors)
+
+    def page_voice(self, lay):
+        v = self.pet.voice
+        self.voice = QCheckBox(toolTip="Al oírlo, dicta tu pedido por voz y trabaja como asistente (reconocimiento local; baja el modelo la primera vez)")
         self.voice.setChecked(bool(store.get("voice", False)))
         self.voice.toggled.connect(self.set_voice)
-        lay.addWidget(self.voice)
         self.vstate, self.vbar = QLabel(objectName="dim"), QProgressBar(textVisible=False)
         self.vbar.setRange(0, 100)
         self.vbar.setFixedHeight(6)
         self.vbar.hide()
         self.voice_state()
-        v = self.pet.voice
         v.progress.connect(self.voice_progress)
         v.ready.connect(self.voice_state)
         v.problem.connect(lambda _: (self.voice_state(), self.voice.setChecked(False)))
-        lay.addWidget(self.vstate)
-        lay.addWidget(self.vbar)
         self.vlevel, self.vheard = QProgressBar(textVisible=False), QLabel("Oí: —", objectName="dim")  # prueba en vivo del micrófono
         self.vlevel.setRange(0, 100)
         self.vlevel.setFixedHeight(6)
@@ -1166,75 +1270,150 @@ class SettingsView(View):
         self.vheard.setWordWrap(True)
         v.level.connect(self.vlevel.setValue)
         v.raw.connect(lambda t: self.vheard.setText(f"Oí: {t}"))
-        lay.addWidget(self.vlevel)
-        lay.addWidget(self.vheard)
-        row = QHBoxLayout()
-        self.speak = QCheckBox("Responder también con voz (masculina o femenina según el género del personaje)")
+        lay.addWidget(self.group(self.row("Escuchar su nombre", self.voice), self.vstate, self.vbar, self.vlevel, self.vheard))
+        self.speak = QCheckBox(toolTip="Masculina o femenina según el género del personaje")
         self.speak.setChecked(bool(store.get("speak", True)))
         self.speak.toggled.connect(lambda on: (store.put("speak", bool(on)), on or speech.stop()))
-        lay.addWidget(self.speak)
         self.vq = QComboBox()
-        for label, key in (("Precisa · small (~480 MB, recomendada)", "small"), ("Rápida · base (~145 MB)", "base")):
+        for label, key in (("Precisa · small (~480 MB)", "small"), ("Rápida · base (~145 MB)", "base")):
             self.vq.addItem(label, key)
         self.vq.setCurrentIndex(max(0, self.vq.findData(v.size)))
         self.vq.currentIndexChanged.connect(lambda _: (v.set_size(self.vq.currentData()), self.voice_state()))
-        row.addWidget(QLabel("Calidad"))
-        row.addWidget(self.vq, 1)
-        lay.addLayout(row)
-        row = QHBoxLayout()
         self.mic = QComboBox()
         self.mic.addItem("Predeterminado del sistema", "")
-        for val, label in self.pet.voice.mics():
+        for val, label in v.mics():
             self.mic.addItem(label, val)
         self.mic.setCurrentIndex(max(0, self.mic.findData(store.get("voice_mic", ""))))
-        self.mic.currentIndexChanged.connect(lambda _: self.pet.voice.set_mic(self.mic.currentData()))
-        row.addWidget(QLabel("Micrófono"))
-        row.addWidget(self.mic, 1)
-        lay.addLayout(row)
-        lay.addSpacing(10)
-        lay.addWidget(QLabel("ESCRITORIO", objectName="section"))
-        self.see = QCheckBox("Ver la ventana activa en el chat (toma una captura antes de responder)")
-        self.ctl = QCheckBox("Permitir controlar el escritorio: ratón, teclado y ventanas (acciones reales en tu equipo)")
-        lay.addWidget(self.see)
-        lay.addWidget(self.ctl)
-        lay.addSpacing(10)
-        lay.addWidget(QLabel("CALIDAD DE LAS IMÁGENES", objectName="section"))
-        self.verify = QCheckBox("Verificar con IA que lo generado sea el mismo personaje (reintenta una vez si no se parece)")
+        self.mic.currentIndexChanged.connect(lambda _: v.set_mic(self.mic.currentData()))
+        lay.addWidget(self.group(self.row("Responder con voz", self.speak), self.row("Calidad", self.vq, True), self.row("Micrófono", self.mic, True)))
+
+    def page_images(self, lay):
+        self.par = QSpinBox(toolTip="Generaciones a la vez al elegir varias (más es más rápido pero gasta más cuota)")
+        self.par.setRange(1, 6)
+        self.par.setValue(int(store.get("parallel", 3)))
+        self.par.setFixedWidth(70)
+        self.par.valueChanged.connect(lambda v: store.put("parallel", v))
+        self.bg = QComboBox(toolTip="Color de fondo que piden los prompts (se recorta al importar)")
+        self.bg.setEditable(True)
+        self.bg.addItems(["#FF00FF", "", "#00FF00", "blanco sólido", "negro sólido"])
+        self.bg.setCurrentText(store.get("prompt_bg", "#FF00FF"))
+        self.bg.setFixedWidth(130)
+        self.bg.currentTextChanged.connect(lambda t: store.put("prompt_bg", t.strip()))
+        self.verify = QCheckBox(toolTip="Comprueba que lo generado sea el mismo personaje (reintenta una vez si no se parece)")
         self.verify.setChecked(bool(store.get("verify_identity", True)))
         self.verify.toggled.connect(lambda v: store.put("verify_identity", bool(v)))
-        self.clean = QCheckBox("Revisar con IA las piezas sueltas de cada cuadro al importar hojas")
+        self.clean = QCheckBox(toolTip="Revisa las piezas sueltas de cada cuadro al importar hojas")
         self.clean.setChecked(bool(store.get("ai_clean", True)))
         self.clean.toggled.connect(lambda v: store.put("ai_clean", bool(v)))
-        lay.addWidget(self.verify)
-        lay.addWidget(self.clean)
-        warn = QLabel("macOS pide permisos de Accesibilidad y de Grabación de pantalla; en Wayland puede no funcionar (usa X11). "
-                      "Cada acción queda en ~/.fruquis/ctl.log.", objectName="dim")
-        warn.setWordWrap(True)
-        lay.addWidget(warn)
-        for w in (self.model, self.effort):
-            w.currentTextChanged.connect(self.save_chat)
-        for w in (self.term, self.see, self.ctl):
-            w.toggled.connect(self.save_chat)
-        lay.addSpacing(14)
-        lay.addWidget(button("Restablecer ajustes", self.reset, "danger"), 0, Qt.AlignLeft)
-        lay.addStretch(1)
+        lay.addWidget(self.group(self.row("En paralelo", self.par), self.row("Fondo", self.bg)))
+        lay.addWidget(self.group(self.row("Verificar identidad", self.verify), self.row("Limpiar piezas sueltas", self.clean)))
+
+    def page_link(self, lay):
+        lay.addWidget(self.link_box())
+
+    def link_box(self) -> QFrame:
+        """Vínculo con otro equipo (celular u otra PC): un código compartido, ruta local (LAN) y/o relay en tu servidor aipi."""
+        box = QFrame(objectName="card")
+        v = QVBoxLayout(box)
+        v.setContentsMargins(16, 14, 16, 14)
+        v.setSpacing(12)
+        box.setToolTip("Vincula este equipo con otro (celular u otra PC) para darle órdenes («dile al celular que abra Maps») y pasarle archivos. Un equipo crea el "
+                       "código y el otro lo escribe. En la misma red se conectan solos; entre redes distintas hace falta el enlace de tu servidor aipi. "
+                       "Los mensajes van firmados pero no cifrados.")
+        self.l_name, self.l_relay, self.l_accept = QLineEdit(), QLineEdit(), QComboBox()
+        self.l_name.setPlaceholderText("nombre de este equipo")
+        self.l_relay.setPlaceholderText("enlace del servidor aipi (?key=…) · vacío = misma red")
+        for label, val in (("Preguntar antes de ejecutar sus órdenes", "ask"), ("Ejecutar sin preguntar", "auto"), ("No aceptar órdenes", "off")):
+            self.l_accept.addItem(label, val)
+        for w in (self.l_name, self.l_relay, self.l_accept):
+            v.addWidget(w)
+        self.l_code = QLabel()
+        self.l_code.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.l_state = QLabel(objectName="hint")
+        self.l_state.setWordWrap(True)
+        v.addWidget(self.l_code)
+        row = QHBoxLayout()
+        for ic, tip, fn, kind in (("plus", "Crear vínculo", self.link_new, "ibp"), ("link", "Unirme con un código…", self.link_join, "ib"), ("x", "Desvincular", self.link_off, "ibd"),
+                                  ("upload", "Enviar archivo…", self.link_file, "ib")):
+            row.addWidget(ibtn(ic, tip, fn, kind))
+        row.addStretch(1)
+        v.addLayout(row)
+        v.addWidget(self.l_state)
+        self.l_name.editingFinished.connect(self.link_save)
+        self.l_relay.editingFinished.connect(self.link_save)
+        self.l_accept.currentIndexChanged.connect(self.link_save)
+        t = QTimer(self)
+        t.timeout.connect(self.link_refresh)
+        t.start(2000)
+        self.link_load()
+        return box
+
+    def link_load(self):
+        from . import link
+        c = link.conf()
+        ai = (store.get("ai", {}) or {}).get("chat", {})
+        for w, val in ((self.l_name, c["name"]), (self.l_relay, c["relay"] or (ai.get("url", "") if ai.get("kind") == "server" else ""))):
+            w.blockSignals(True)
+            w.setText(val)
+            w.blockSignals(False)
+        self.l_accept.blockSignals(True)
+        self.l_accept.setCurrentIndex(max(0, self.l_accept.findData(c["accept"])))
+        self.l_accept.blockSignals(False)
+        self.link_refresh()
+
+    def link_refresh(self):
+        from . import link
+        code = link.conf()["code"]
+        self.l_code.setText(f"Código: {link.show_code(code)}" if code else "Sin vincular")
+        self.l_state.setText(self.pet.hub.link.status())
+
+    def link_save(self, *_):
+        from . import link
+        link.save(name=self.l_name.text().strip() or link.conf()["name"], relay=self.l_relay.text().strip(), accept=self.l_accept.currentData())
+        self.pet.hub.link.start()  # el nombre y el relay cambian lo que anuncia y a dónde se conecta
+
+    def link_new(self):
+        from . import link
+        link.save(code=link.new_code())
+        self.link_save()
+        self.pet.say("Escribe ese código en el otro equipo («Unirme con un código»).", 8000)
+
+    def link_join(self):
+        from PySide6.QtWidgets import QInputDialog
+        from . import link
+        text, ok = QInputDialog.getText(self, "Unirme", "Código del otro equipo:")
+        code = link.clean_code(text) if ok else ""
+        if len(code) == 12:
+            link.save(code=code)
+            self.link_save()
+        elif ok:
+            self.l_state.setText("✗ El código tiene 12 letras o números (ABCD-EFGH-JKMN).")
+
+    def link_off(self):
+        from . import link
+        link.save(code="")
+        store.put("link_peers", {})
+        self.pet.hub.link.stop()
+        self.link_refresh()
+
+    def link_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Enviar al otro equipo", str(Path.home()))
+        if path:
+            self.pet.hub.send_file(path)
 
     def binary_row(self, tool: str, label: str, hint: str) -> QFrame:
         box = QFrame(objectName="card")
         v = QVBoxLayout(box)
-        v.setContentsMargins(14, 12, 14, 12)
-        v.setSpacing(8)
-        v.addWidget(QLabel(label))
-        d = QLabel(hint, objectName="dim")
-        d.setWordWrap(True)
-        v.addWidget(d)
+        v.setContentsMargins(16, 14, 16, 14)
+        v.setSpacing(12)
+        v.addWidget(QLabel(label, toolTip=hint))
         row = QHBoxLayout()
         edit = QLineEdit(store.get(binaries.SETTING[tool], ""))
         edit.editingFinished.connect(lambda: self.save_bin(tool))
         row.addWidget(edit, 1)
-        row.addWidget(button("Examinar…", lambda: self.browse(tool)))
-        row.addWidget(button("Detectar", lambda: self.detect(tool), "ghost"))
-        row.addWidget(button("Probar", lambda: self.test(tool), "primary"))
+        row.addWidget(ibtn("folder", "Examinar…", lambda: self.browse(tool)))
+        row.addWidget(ibtn("search", "Detectar automáticamente", lambda: self.detect(tool)))
+        row.addWidget(ibtn("check", "Probar", lambda: self.test(tool), "ibp"))
         v.addLayout(row)
         st = QLabel(objectName="hint")
         st.setWordWrap(True)
@@ -1246,31 +1425,29 @@ class SettingsView(View):
         """Usar un binario o una API (oficial o propia, con la misma forma que la de OpenAI / Anthropic) para chat o imágenes."""
         box = QFrame(objectName="card")
         v = QVBoxLayout(box)
-        v.setContentsMargins(14, 12, 14, 12)
-        v.setSpacing(8)
+        v.setContentsMargins(16, 14, 16, 14)
+        v.setSpacing(12)
         v.addWidget(QLabel(label))
         mode = QComboBox()
-        mode.addItem("Binario local (CLI)", "binary")
+        mode.addItem("Binario (CLI)", "binary")
         mode.addItem("API", "api")
         kind = QComboBox()
-        kind.addItem("Formato OpenAI (OpenAI o servidor propio)", "openai")
+        kind.addItem("OpenAI (o propio)", "openai")
         if what == "chat":
-            kind.addItem("Formato Anthropic (Claude o servidor propio)", "anthropic")
-        kind.addItem("Servidor aipi (claude/codex de tu servidor)", "server")
+            kind.addItem("Anthropic (o propio)", "anthropic")
+        kind.addItem("Servidor aipi", "server")
         url, key, model = QLineEdit(), QLineEdit(), QLineEdit()
         key.setEchoMode(QLineEdit.Password)
-        url.setPlaceholderText("URL base; vacío = servidor oficial (servidor aipi: tu enlace personal con ?key=…)")
-        key.setPlaceholderText("clave de la API (vacío = variable de entorno)")
-        model.setPlaceholderText("modelo; vacío = el predeterminado")
+        url.setPlaceholderText("URL base · vacío = oficial (aipi: tu enlace con ?key=…)")
+        key.setPlaceholderText("clave · vacío = variable de entorno")
+        model.setPlaceholderText("modelo · vacío = predeterminado")
         for w in (mode, kind, url, key, model):
             v.addWidget(w)
-        d = QLabel("Con API el chat solo conversa y ve imágenes (sin terminal ni control del escritorio). La clave se guarda en ~/.fruquis/config.json.", objectName="dim")
-        d.setWordWrap(True)
-        v.addWidget(d)
+        box.setToolTip("Con API el chat solo conversa y ve imágenes (sin terminal ni control del escritorio). La clave se guarda en ~/.fruquis/config.json.")
         row = QHBoxLayout()
         st = QLabel(objectName="hint")
         st.setWordWrap(True)
-        row.addWidget(button("Probar", lambda: self.test_api(what), "primary"))
+        row.addWidget(ibtn("check", "Probar", lambda: self.test_api(what), "ibp"))
         row.addWidget(st, 1)
         v.addLayout(row)
         self.apis[what] = (mode, kind, url, key, model, st)
@@ -1315,7 +1492,7 @@ class SettingsView(View):
             w.blockSignals(True)
             w.setCurrentText(val)
             w.blockSignals(False)
-        for cb, key, default in ((self.term, "tools", True), (self.see, "see", False), (self.ctl, "control", False)):
+        for cb, key, default in ((self.term, "tools", True), (self.see, "see", False), (self.ctl, "control", False), (self.web, "browser", False)):
             cb.blockSignals(True)
             cb.setChecked(o.get(key, default))
             cb.blockSignals(False)
@@ -1411,7 +1588,9 @@ class SettingsView(View):
 
     def save_chat(self, *_):
         store.put("chat_opts", {**store.get("chat_opts", {}), "model": self.model.currentText(), "effort": self.effort.currentText(), "tools": self.term.isChecked(),
-                                "see": self.see.isChecked(), "control": self.ctl.isChecked()})
+                                "see": self.see.isChecked(), "control": self.ctl.isChecked(), "browser": self.web.isChecked()})
+        if self.sender() is self.ctl and self.ctl.isChecked():
+            self.pet.say("Ojo: con «Controlar» activo puedo mover el ratón y teclear. Pulsa ■ en el chat para detenerme.", 6000)
 
     def reset(self):
         for key in ("bin_claude", "bin_codex", "ai", "scale", "prompt_bg", "chat_opts", "parallel", "verify_identity", "ai_clean", "speak"):
@@ -1426,145 +1605,99 @@ class SettingsView(View):
         self.shell.toast("Ajustes restablecidos")
 
 
-class GenBatchView(View):
-    """Elegir varias animaciones (faltantes o para reemplazar) y generarlas en paralelo, en segundo plano. Se puede salir de la pantalla:
-    el trabajo sigue y la mascota avisa."""
-    title = "Generar animaciones"
-    COLOR = {"en cola": "#8d8da0", "generando": "#8a6ae0", "lista": "#7bd88f", "error": "#f07178", "cancelada": "#6a6a7c", "aplicada": "#7bd88f"}
+class JobsView(View):
+    """Todo lo que se genera con ChatGPT, de todos los personajes: una card por animación con su estado y las acciones como iconos."""
+    title = "Generaciones"
+    COLOR = {"en cola": (141, 141, 160), "generando": (138, 106, 224), "lista": (123, 216, 143), "error": (240, 113, 120), "cancelada": (106, 106, 124), "aplicada": (123, 216, 143)}
 
     def __init__(self, shell):
         super().__init__(shell)
-        self.cid = ""
-        lay = self.page(spacing=10)
-        hint = QLabel("Marca las animaciones que quieres generar: las faltantes nuevas y/o las existentes para reemplazarlas. Se generan a la vez "
-                      "en segundo plano; puedes salir de esta pantalla mientras trabajan.", objectName="dim")
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
-        top = QHBoxLayout()
-        self.list = QListWidget()
-        self.list.setMaximumHeight(190)
-        self.list.setStyleSheet("QListWidget::item{padding:4px 10px;margin:1px 4px}")
-        top.addWidget(self.list, 3)
-        side = QVBoxLayout()
-        side.addWidget(button("Marcar todas", lambda: self.mark("all"), "ghost"))
-        side.addWidget(button("Marcar faltantes", lambda: self.mark("missing"), "ghost"))
-        side.addWidget(button("Marcar existentes", lambda: self.mark("existing"), "ghost"))
-        side.addWidget(button("Quitar todas", lambda: self.mark(None), "ghost"))
-        side.addStretch(1)
-        self.go = button("✨  Generar seleccionadas", self.start, "primary")
-        side.addWidget(self.go)
-        top.addLayout(side, 1)
-        lay.addLayout(top)
-        self.par_lb = QLabel(objectName="hint")
-        lay.addWidget(self.par_lb)
-        lay.addWidget(QLabel("COLA", objectName="section"))
-        self.queue = QListWidget()
-        lay.addWidget(self.queue, 1)
-        row = QHBoxLayout()
-        self.btns = {k: button(lab, fn, nm) for k, lab, fn, nm in (("review", "Revisar", self.review, None), ("apply", "Aplicar", self.apply_one, None),
-                     ("cancel", "Cancelar", self.cancel_one, "danger"), ("cancel_all", "Cancelar todas", self.cancel_all, "danger"), ("apply_all", "Aplicar todas las listas", self.apply_all, "primary"),
-                     ("clear", "Limpiar terminadas", lambda: shell.gen.clear_finished(), "ghost"))}
+        lay = self.page(margins=(28, 18, 28, 18), spacing=10, scroll=True, width=900)
+        bar = QHBoxLayout()
+        bar.setSpacing(4)
+        bar.addStretch(1)
+        self.btns = {k: ibtn(ic, tip, fn, nm) for k, ic, tip, fn, nm in (
+            ("clear", "broom", "Limpiar terminadas", lambda: shell.gen.clear_finished(), "ib"), ("cancel_all", "x", "Cancelar todas", shell.gen.cancel_all, "ibd"),
+            ("apply_all", "checks", "Aplicar todas las listas", self.apply_all, "ibp"))}
         for b in self.btns.values():
-            row.addWidget(b)
-        lay.addLayout(row)
-        self.err = QLabel(objectName="hint")
-        self.err.setWordWrap(True)
-        lay.addWidget(self.err)
+            bar.addWidget(b)
+        lay.addLayout(bar)
+        self.box = QVBoxLayout()
+        self.box.setSpacing(10)
+        lay.addLayout(self.box)
+        self.empty = QLabel("Nada en curso", objectName="dim", alignment=Qt.AlignCenter)
+        lay.addWidget(self.empty)
+        lay.addStretch(1)
         shell.gen.changed.connect(self.redraw)
-        self.queue.currentRowChanged.connect(self.sel_changed)
 
-    def enter(self, cid="", **kw):
-        self.cid = cid or self.cid
-        c = sprites.get(self.cid)
-        self.list.clear()
-        for n in sprites.WANTED:
-            have = n in c.anims
-            it = QListWidgetItem(f"{sprites.label(n)}  ·  {'reemplazar (ya existe)' if have else 'falta'}")
-            it.setData(Qt.UserRole, n)
-            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
-            it.setCheckState(Qt.Unchecked if have else Qt.Checked)
-            if have:
-                it.setForeground(QColor("#8d8da0"))
-            self.list.addItem(it)
-        self.par_lb.setText(f"En paralelo: {int(store.get('parallel', 3))} a la vez (cámbialo en Ajustes).")
+    def enter(self, **kw):
         self.redraw()
 
-    def mark(self, only):
-        """only: None = quitar todas, "all" = todas, "missing" = faltantes, "existing" = existentes."""
-        c = sprites.get(self.cid)
-        for i in range(self.list.count()):
-            have = self.list.item(i).data(Qt.UserRole) in c.anims
-            on = only == "all" or (only == "missing" and not have) or (only == "existing" and have)
-            self.list.item(i).setCheckState(Qt.Checked if on else Qt.Unchecked)
-
-    def start(self):
-        from . import imagegen
-        names = [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count()) if self.list.item(i).checkState() == Qt.Checked]
-        if not names:
-            return self.shell.toast("Marca al menos una animación")
-        if not imagegen.provider.image_ready():
-            self.shell.toast("No hay generador de imágenes. Elige el binario de Codex o configura una API en Ajustes.", 5000)
-            return self.shell.open("settings")
-        c = sprites.get(self.cid)
-        if not (c.neutral or c.source or sprites.reference(c)):
-            return self.shell.toast("Carga primero la imagen general del personaje (Editar personaje).", 5000)
-        started = self.shell.gen.start(self.cid, names)
-        self.shell.toast(f"Generando {len(started)} en segundo plano" if started else "Esas ya están en curso")
-
-    # ---- cola ----
-    def mine(self):
-        return [j for j in self.shell.gen.jobs if j.cid == self.cid]
-
     def redraw(self):
-        sel = self.queue.currentRow()
-        self.queue.blockSignals(True)
-        self.queue.clear()
-        for j in self.mine():
-            it = QListWidgetItem(f"●  {j.anim}  —  {j.status}" + (f"  ·  {j.msg}" if j.msg and j.status in ("generando", "en cola") else ""))
-            it.setForeground(QColor(self.COLOR.get(j.status, "#ececf1")))
-            self.queue.addItem(it)
-        self.queue.blockSignals(False)
-        self.queue.setCurrentRow(min(sel, self.queue.count() - 1) if self.queue.count() else -1)
-        self.sel_changed()
+        if not self.isVisible() and self.box.count():
+            return  # se redibuja al volver a la pantalla
+        while self.box.count():
+            self.box.takeAt(0).widget().deleteLater()
+        jobs = self.shell.gen.jobs
+        for j in reversed(jobs):
+            if card := self.card(j):
+                self.box.addWidget(card)
+        self.empty.setVisible(not self.box.count())
+        self.btns["apply_all"].setEnabled(any(j.status == "lista" for j in jobs))
+        self.btns["cancel_all"].setEnabled(any(j.status in ("en cola", "generando") for j in jobs))
+        self.btns["clear"].setEnabled(any(j.status not in ("en cola", "generando", "lista") for j in jobs))
 
-    def cur(self):
-        i = self.queue.currentRow()
-        jobs = self.mine()
-        return jobs[i] if 0 <= i < len(jobs) else None
+    def card(self, j) -> QFrame | None:
+        try:
+            c = sprites.get(j.cid)
+        except Exception:  # noqa: BLE001 - el personaje se eliminó: su trabajo ya no se muestra
+            return None
+        box = QFrame(objectName="card")
+        v = QVBoxLayout(box)
+        v.setContentsMargins(12, 10, 12, 10)
+        v.setSpacing(6)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        pic = QLabel(toolTip=c.name)
+        pic.setPixmap(avatar(sprites.reference(c), 40))
+        row.addWidget(pic)
+        mid = QVBoxLayout()
+        mid.setSpacing(0)
+        mid.addWidget(QLabel(sprites.label(j.anim)))
+        mid.addWidget(QLabel(c.name, objectName="dim"))
+        row.addLayout(mid, 1)
+        r, g, b = self.COLOR.get(j.status, (236, 236, 241))
+        chip = QLabel(j.status, objectName="chip")
+        chip.setStyleSheet(f"background:rgba({r},{g},{b},45);color:rgb({r},{g},{b})")
+        chip.setFixedHeight(22)
+        row.addWidget(chip, 0, Qt.AlignVCenter)
+        if j.status == "lista":
+            row.addWidget(ibtn("eye", "Revisar", lambda j=j: j.plan and self.shell.push("review", cid=j.cid, plan=j.plan, job=j)))
+            row.addWidget(ibtn("check", "Aplicar", lambda j=j: self.apply(j), "ibp"))
+        elif j.status in ("en cola", "generando"):
+            row.addWidget(ibtn("x", "Cancelar", lambda j=j: self.shell.gen.cancel(j), "ibd"))
+        v.addLayout(row)
+        if j.status == "generando":
+            bar = QProgressBar(textVisible=False)
+            bar.setRange(0, 0)  # avance indeterminado
+            bar.setFixedHeight(4)
+            v.addWidget(bar)
+        note = j.error if j.status == "error" else j.msg
+        if note:
+            lb = QLabel(note, objectName="hint", toolTip=note)
+            lb.setWordWrap(True)
+            v.addWidget(lb)
+        return box
 
-    def sel_changed(self, *_):
-        j = self.cur()
-        self.btns["review"].setEnabled(bool(j and j.status == "lista"))
-        self.btns["apply"].setEnabled(bool(j and j.status == "lista"))
-        self.btns["cancel"].setEnabled(bool(j and j.status in ("en cola", "generando")))
-        self.btns["cancel_all"].setEnabled(any(x.status in ("en cola", "generando") for x in self.mine()))
-        n = sum(x.status == "lista" for x in self.mine())
-        self.btns["apply_all"].setEnabled(n > 0)
-        self.btns["apply_all"].setText(f"Aplicar todas las listas ({n})" if n else "Aplicar todas las listas")
-        self.err.setText(f"✗ {j.error}" if j and j.status == "error" else "")
-
-    def review(self):
-        if (j := self.cur()) and j.plan:
-            self.shell.push("review", cid=j.cid, plan=j.plan, job=j)
-
-    def apply_one(self):
-        if (j := self.cur()) and j.plan:
-            self.shell.gen.apply(j, self.pet)
-            self.shell.toast(f"«{j.anim}» aplicada")
+    def apply(self, j):
+        self.shell.gen.apply(j, self.pet)
+        self.shell.toast(f"«{j.anim}» aplicada")
 
     def apply_all(self):
-        ready = [j for j in self.mine() if j.status == "lista"]
+        ready = [j for j in self.shell.gen.jobs if j.status == "lista"]
         for j in ready:
             self.shell.gen.apply(j, self.pet)
         self.shell.toast(f"{len(ready)} animaciones aplicadas")
-
-    def cancel_one(self):
-        if j := self.cur():
-            self.shell.gen.cancel(j)
-
-    def cancel_all(self):
-        for j in self.mine():
-            self.shell.gen.cancel(j)
 
 
 class RefineView(View):
@@ -1586,7 +1719,7 @@ class RefineView(View):
         self.combo = QComboBox()
         self.combo.currentIndexChanged.connect(self.show_version)
         row.addWidget(self.combo, 1)
-        self.use_btn = button("Usar esta versión", self.use, "primary")
+        self.use_btn = ibtn("check", "Usar esta versión", self.use, "ibp")
         row.addWidget(self.use_btn)
         lay.addLayout(row)
         self.log = QPlainTextEdit(readOnly=True)
@@ -1604,10 +1737,9 @@ class RefineView(View):
         self.input.setPlaceholderText("¿Qué hay que corregir? Se aplica sobre la versión seleccionada")
         self.input.returnPressed.connect(self.send)
         self.refs = []
-        self.clip_btn = button("📎", self.attach, "ghost")
-        self.clip_btn.setToolTip("Adjuntar imágenes de referencia (clic otra vez para quitarlas)")
-        self.send_btn = button("✨  Enviar", self.send, "primary")
-        self.cancel_btn = button("Cancelar", self.cancel, "danger")
+        self.clip_btn = ibtn("clip", "Adjuntar imágenes de referencia", self.attach)
+        self.send_btn = ibtn("send", "Enviar", self.send, "ibp")
+        self.cancel_btn = ibtn("x", "Cancelar", self.cancel, "ibd")
         self.cancel_btn.hide()
         for w in (self.input, self.clip_btn, self.send_btn, self.cancel_btn):
             send.addWidget(w)
@@ -1658,7 +1790,7 @@ class RefineView(View):
     def attach(self):
         """Si ya hay imágenes adjuntas, el clic las quita; si no, abre el selector."""
         self.refs = [] if self.refs else pick_images(self)
-        self.clip_btn.setText(f"📎 {len(self.refs)}" if self.refs else "📎")
+        seticon(self.clip_btn, "check" if self.refs else "clip", f"{len(self.refs)} imagen(es): clic para quitarlas" if self.refs else "Adjuntar imágenes de referencia")
 
     def send(self):
         from . import imagegen
@@ -1667,7 +1799,7 @@ class RefineView(View):
             return
         base = self.versions[self.combo.currentIndex()]["path"]
         extra, self.refs = self.refs, []
-        self.clip_btn.setText("📎")
+        seticon(self.clip_btn, "clip", "Adjuntar imágenes de referencia")
         if extra:
             text += f"  (+{len(extra)} imagen(es) de referencia)"
         self.busy = True
@@ -1723,10 +1855,6 @@ class ProfileView(View):
         super().__init__(shell)
         self.cid, self.job, self.loading = "", Bg(), False
         lay = lay or self.page(spacing=8)  # con `lay` se incrusta en otra vista (RefsView)
-        hint = QLabel("La IA mira las imágenes del personaje y escribe cómo es y qué cuerpo tiene; con eso se adaptan los prompts de cada animación. "
-                      "Puedes corregir los textos a mano.", objectName="dim")
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
         self.cname, self.cdesc = QLineEdit(), QPlainTextEdit()
         self.cname.setPlaceholderText("Nombre del personaje")
         self.cdesc.setPlaceholderText("Descripción breve")
@@ -1740,14 +1868,14 @@ class ProfileView(View):
         # personalidad: la usa el chat para contestar como el personaje; se escribe, se busca en la red o se saca de su historia
         self.persona, self.story = QPlainTextEdit(), QPlainTextEdit()
         self.persona.setPlaceholderText("Cómo es y cómo habla: temperamento, muletillas, cómo trata al usuario… (vacío = tierna y breve)")
-        self.story.setPlaceholderText("Opcional: pega aquí la historia del personaje y pulsa «Sacar de la historia»")
+        self.story.setPlaceholderText("Opcional: la historia del personaje")
         for lab, w, h in (("PERSONALIDAD (CHAT)", self.persona, 70), ("HISTORIA", self.story, 60)):
             lay.addWidget(QLabel(lab, objectName="section"))
             w.setFixedHeight(h)
             lay.addWidget(w)
         prow = QHBoxLayout()
-        self.web_btn = button("🌐  Buscar personalidad en la red", lambda: self.gen_persona(False))
-        self.story_btn = button("📖  Sacar de la historia", lambda: self.gen_persona(True))
+        self.web_btn = ibtn("globe", "Buscar la personalidad en la red", lambda: self.gen_persona(False))
+        self.story_btn = ibtn("book", "Sacar la personalidad de la historia", lambda: self.gen_persona(True))
         prow.addWidget(self.web_btn)
         prow.addWidget(self.story_btn)
         prow.addStretch(1)
@@ -1761,12 +1889,12 @@ class ProfileView(View):
             w.setMinimumHeight(h)
             lay.addWidget(w, 1 if w is self.actions else 0)
         row = QHBoxLayout()
-        self.ai_btn = button("✨  Analizar con IA", self.analyze, "primary")
+        self.ai_btn = ibtn("sparkles", "Analizar con IA", self.analyze, "ibp")
         row.addWidget(self.ai_btn)
-        self.stop_btn = button("Cancelar análisis", self.stop_analysis, "danger")
+        self.stop_btn = ibtn("x", "Cancelar análisis", self.stop_analysis, "ibd")
         self.stop_btn.hide()
         row.addWidget(self.stop_btn)
-        row.addWidget(button("Guardar", self.save))
+        row.addWidget(ibtn("save", "Guardar", self.save))
         row.addStretch(1)
         lay.addLayout(row)
         self.status = QLabel(objectName="hint")
@@ -1795,7 +1923,7 @@ class ProfileView(View):
         self.story.setPlainText(c.story)
         self.gender.setCurrentIndex(max(0, self.gender.findData(c.gender)))
         self.loading = False
-        self.ai_btn.setText("✨  Volver a analizar con IA" if c.identity else "✨  Analizar con IA")
+        self.ai_btn.setToolTip("Volver a analizar con IA" if c.identity else "Analizar con IA")
 
     def save(self):
         actions = {}

@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor, QKeySequence, QPainter, QPainterPath, QPixmap,
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea,
                                QVBoxLayout, QWidget, QFileDialog)
 
-from . import chat, control, speech, sprites, store
+from . import chat, control, icons, speech, sprites, store
 from .app import clip
 from .voice import _norm, _phon, log
 
@@ -130,8 +130,6 @@ QCheckBox#opt::indicator:checked {{ background:{ACCENT}; border:1px solid {ACCEN
 """
 SUGGEST = (("💡", "¿Qué me recomiendas hacer ahora?"), ("🪟", "Revisa en qué ventana estoy"), ("✨", "Cuéntame algo curioso"))
 THINK = ("Pensando", "Dándole vueltas", "Casi lo tengo", "Revisando")
-MODELS = (("Haiku", "haiku"), ("Sonnet", "sonnet"), ("Opus", "opus"))
-EFFORTS = (("esfuerzo bajo", "low"), ("esfuerzo medio", "medium"), ("esfuerzo alto", "high"))
 
 
 def avatar(path, size) -> QPixmap:
@@ -212,7 +210,7 @@ class ChatView(QWidget):
         self.who, self.state = QLabel(objectName="name"), QLabel("en línea", objectName="state")
         titles.addWidget(self.who)
         titles.addWidget(self.state)
-        new = QPushButton("＋ Nuevo chat", objectName="ghost", cursor=Qt.PointingHandCursor, toolTip="Ctrl+N")
+        new = QPushButton(objectName="ghost", cursor=Qt.PointingHandCursor, toolTip="Nuevo chat (Ctrl+N)", icon=icons.icon("plus"))
         new.clicked.connect(self.reset)
         hl.addWidget(self.pic)
         hl.addLayout(titles, 1)
@@ -240,46 +238,19 @@ class ChatView(QWidget):
         bv.addWidget(self.box)
         row = QHBoxLayout()
         row.setSpacing(2)
-        opts = store.get("chat_opts", {})
-        self.model, self.effort = QComboBox(objectName="opt"), QComboBox(objectName="opt")
-        for cb, items, key, default in ((self.model, MODELS, "model", "haiku"), (self.effort, EFFORTS, "effort", "medium")):
-            for lab, val in items:
-                cb.addItem(lab, val)
-            cb.setCurrentIndex(max(0, cb.findData(opts.get(key, default))))
-            cb.setCursor(Qt.PointingHandCursor)
-            cb.currentIndexChanged.connect(self.save_opts)
-        self.term = QCheckBox("Terminal", objectName="opt", cursor=Qt.PointingHandCursor,
-                              toolTip="Si está activa, el personaje puede ejecutar comandos Bash para cumplir lo que pidas")
-        self.term.setChecked(opts.get("tools", True))
-        self.term.toggled.connect(self.save_opts)
-        self.see = QCheckBox("Ver ventana", objectName="opt", cursor=Qt.PointingHandCursor,
-                             toolTip="Antes de responder toma una captura de la ventana activa para que el personaje vea su contenido")
-        self.see.setChecked(opts.get("see", False))
-        self.ctl = QCheckBox("Controlar", objectName="opt", cursor=Qt.PointingHandCursor,
-                             toolTip="El personaje puede ver y controlar tu escritorio: mover el ratón, hacer clic y escribir. Desmárcalo para impedirlo.")
-        self.ctl.setChecked(opts.get("control", False))
-        self.web = QCheckBox("Navegador", objectName="opt", cursor=Qt.PointingHandCursor,
-                             toolTip="El personaje puede controlar tu navegador (pestañas, páginas, formularios) con la extensión Claude in Chrome. Más lento al arrancar.")
-        self.web.setChecked(opts.get("browser", False))
-        self.web.toggled.connect(self.save_opts)
-        self.see.toggled.connect(self.save_opts)
-        self.ctl.toggled.connect(self.save_opts)
-        self.ctl.toggled.connect(self.control_notice)
-        self.go = QPushButton("➤", objectName="send", cursor=Qt.PointingHandCursor)
+        self.go = QPushButton(objectName="send", cursor=Qt.PointingHandCursor, icon=icons.icon("send", icons.ON))
         self.go.setFixedSize(30, 30)
         self.go.clicked.connect(self.on_go)
         self.refs = []
-        self.clip_btn = QPushButton("📎", objectName="ghost", cursor=Qt.PointingHandCursor, toolTip="Adjuntar imágenes de referencia (clic otra vez para quitarlas)")
+        self.clip_btn = QPushButton(objectName="ghost", cursor=Qt.PointingHandCursor, toolTip="Adjuntar imágenes de referencia", icon=icons.icon("clip"))
         self.clip_btn.clicked.connect(self.attach)
-        self.mic_btn = QPushButton("🎙", objectName="ghost", cursor=Qt.PointingHandCursor,
+        self.mic_btn = QPushButton(objectName="ghost", cursor=Qt.PointingHandCursor, icon=icons.icon("mic"),
                                    toolTip="Hablar ahora, sin decir el nombre: dicta una orden (clic otra vez para cancelar)")
         self.mic_btn.clicked.connect(self.toggle_mic)
         self.watch = QTimer(self, interval=5000, timeout=self.check_stuck)  # red de seguridad: si la IA no contesta, el chat no espera para siempre
         self.watch.start()
         self.mic_t = QTimer(self, singleShot=True, timeout=self.pet.voice.cancel_once)  # sin voz en unos segundos, se cancela
         self.pet.voice.listening.connect(self.on_listening)
-        for w in (self.model, self.effort, self.term, self.see, self.ctl, self.web):
-            row.addWidget(w)
         row.addStretch(1)
         row.addWidget(self.mic_btn)
         row.addWidget(self.clip_btn)
@@ -297,10 +268,11 @@ class ChatView(QWidget):
     def attach(self):
         """Si ya hay imágenes adjuntas, el clic las quita; si no, abre el selector."""
         self.refs = [] if self.refs else pick_images(self)
-        self.clip_btn.setText(f"📎 {len(self.refs)}" if self.refs else "📎")
+        self.clip_btn.setIcon(icons.icon("check" if self.refs else "clip"))
+        self.clip_btn.setToolTip(f"{len(self.refs)} imagen(es): clic para quitarlas" if self.refs else "Adjuntar imágenes de referencia")
 
     def check_stuck(self):
-        acts = self.ctl.isChecked() or self.web.isChecked()
+        acts = self.opt("control") or self.opt("browser")
         if self.waiting and time.monotonic() - self.t0 > (STUCK_ACT if acts else STUCK_S):
             log("atascado", pedido=self.last_user, segundos=round(time.monotonic() - self.t0), fase=self.pet.busy_phase)
             self.stop()
@@ -311,12 +283,12 @@ class ChatView(QWidget):
         if v.once:
             return v.cancel_once()
         speech.stop()  # que no se dicte su propia voz
-        self.mic_btn.setText("⏳")  # preparando el micrófono (la primera vez carga el modelo)
+        self.mic_btn.setIcon(icons.icon("reset", "#e0b050"))  # preparando el micrófono (la primera vez carga el modelo)
         self.mic_t.start(60000)
         v.listen_once()
 
     def on_listening(self, on: bool):
-        self.mic_btn.setText("🔴" if on else "🎙")
+        self.mic_btn.setIcon(icons.icon("mic", "#f07178" if on else icons.IDLE))
         if on:
             self.mic_t.start(12000)  # desde que el micrófono está abierto, 12 s para empezar a hablar
             self.pet.say("🎙 Escuchando…", 12000)
@@ -324,16 +296,11 @@ class ChatView(QWidget):
         else:
             self.mic_t.stop()
         if not self.busy():
-            self.state.setText("🎙 escuchando…" if on else "⚠ controla tu escritorio" if self.ctl.isChecked() else "en línea")
+            self.state.setText("🎙 escuchando…" if on else "⚠ controla tu escritorio" if self.opt("control") else "en línea")
 
-    def save_opts(self, *_):
-        store.put("chat_opts", {"model": self.model.currentData(), "effort": self.effort.currentData(), "tools": self.term.isChecked(),
-                                "see": self.see.isChecked(), "control": self.ctl.isChecked(), "browser": self.web.isChecked()})
-
-    def control_notice(self, on: bool):
-        self.state.setText("⚠ controla tu escritorio" if on else "en línea")
-        if on:
-            self.pet.say("Ojo: con «Controlar» activo puedo mover el ratón y teclear. Pulsa ■ para detenerme.", 6000)
+    def opt(self, key: str, default=False):
+        """Opciones del chat (modelo, esfuerzo, terminal, ver, controlar, navegador): se cambian en Ajustes."""
+        return store.get("chat_opts", {}).get(key, default)
 
     # ---- presentación ----
     def refresh_char(self):
@@ -444,7 +411,7 @@ class ChatView(QWidget):
 
     def sync(self):
         busy = self.busy()
-        self.go.setText("■" if busy else "➤")
+        self.go.setIcon(icons.icon("stop" if busy else "send", icons.ON))
         self.go.setToolTip("Detener" if busy else "Enviar")
         self.go.setEnabled(busy or bool(self.box.toPlainText().strip()))
 
@@ -515,16 +482,7 @@ class ChatView(QWidget):
     # ---- conversación ----
     def enter(self, **kw):
         self.refresh_char()
-        o = store.get("chat_opts", {})  # los valores por defecto se cambian también desde Ajustes
-        for cb, key, default in ((self.model, "model", "haiku"), (self.effort, "effort", "medium")):
-            cb.blockSignals(True)
-            cb.setCurrentIndex(max(0, cb.findData(o.get(key, default))))
-            cb.blockSignals(False)
-        for cb, key, default in ((self.term, "tools", True), (self.see, "see", False), (self.ctl, "control", False), (self.web, "browser", False)):
-            cb.blockSignals(True)
-            cb.setChecked(o.get(key, default))
-            cb.blockSignals(False)
-        self.state.setText("⚠ controla tu escritorio" if self.ctl.isChecked() else "en línea")
+        self.state.setText("⚠ controla tu escritorio" if self.opt("control") else "en línea")
         self.box.setFocus()
 
     def send(self, text=None, src="teclado"):
@@ -534,13 +492,20 @@ class ChatView(QWidget):
         chars = list(sprites.list_all().values())
         c, ask = pick_character(text, chars)
         log("pedido", texto=text, origen=src, personaje=self.pet.char.name, cambio=c.name if c else None, pregunta_cual=ask,
-            terminal=self.term.isChecked(), ver=self.see.isChecked(), controlar=self.ctl.isChecked())
+            terminal=self.opt("tools", True), ver=self.opt("see"), controlar=self.opt("control"))
         self.src = src
         if is_new_chat(text):
             self.box.clear()
             self.reset()
             log("accion_local", pedido=text, origen=src, accion="chat_nuevo")
             return self.pet.say("🆕 Chat nuevo", 3000)
+        if (rem := self.pet.hub.parse(text)) and not self.refs:  # «dile al celular que…»: la ejecuta el otro equipo
+            self.box.clear()
+            self.add(text, True)
+            self.hist.append(f"Tú: {text}")
+            self.record(True, text)
+            log("accion_local", pedido=text, origen=src, accion="otro_equipo", destino=rem[0])
+            return self.pet.hub.send_task(*rem)
         if mv := parse_move(text):  # mover a la mascota tampoco necesita a la IA
             return self.local_pet(text, src, mv)
         if vol := control.parse_volume(text):  # el volumen se cambia directo y se lee el valor real: sin IA, al instante y sin «listo» falsos
@@ -608,13 +573,14 @@ class ChatView(QWidget):
             self.last_actions.deleteLater()
             self.last_actions = None
         self.cancelled, self.t0 = False, time.monotonic()
-        image = self.snapshot() if (self.see.isChecked() or self.ctl.isChecked()) else None
+        image = self.snapshot() if (self.opt("see") or self.opt("control")) else None
         self.set_waiting(True)
         self.pet.set_busy("reading" if image else "thinking")
-        self.pet.ask_async(ctx + "\n".join(self.hist[-10:]) + f"\n{self.pet.char.name}:", "chat", model=self.model.currentData(),
-                           effort=self.effort.currentData(), tools=self.term.isChecked(), image=image, desktop=self.ctl.isChecked(), refs=self.refs)
+        self.pet.ask_async(ctx + "\n".join(self.hist[-10:]) + f"\n{self.pet.char.name}:", "chat", model=self.opt("model", "haiku"),
+                           effort=self.opt("effort", "medium"), tools=self.opt("tools", True), image=image, desktop=self.opt("control"), refs=self.refs)
         self.refs = []  # las adjuntas valen para este mensaje (la lista enviada ya no se modifica)
-        self.clip_btn.setText("📎")
+        self.clip_btn.setIcon(icons.icon("clip"))
+        self.clip_btn.setToolTip("Adjuntar imágenes de referencia")
 
     def snapshot(self):
         """Captura de la última ventana externa. Oculta un instante las ventanas de Fruquis para que no tapen el contenido."""

@@ -21,7 +21,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,6 +57,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -80,10 +88,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -140,6 +151,14 @@ class MainActivity : ComponentActivity() {
                 secondaryContainer = SELECTED, error = DANGER)) { Home() }
         }
         intent?.getStringExtra("tab")?.let { tab = it }
+        if (Link.conf(this).code.isNotEmpty() && !Link.running) startLink()  // vinculado: sigue recibiendo órdenes y archivos
+    }
+
+    /** Arranca (o reinicia con los ajustes nuevos) el servicio del vínculo con otro equipo. */
+    private fun startLink() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED)
+            requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 2)  // para el aviso fijo y para «Permitir / Rechazar» una orden
+        startForegroundService(Intent(this, LinkService::class.java))
     }
 
     override fun onDestroy() {
@@ -212,7 +231,7 @@ class MainActivity : ComponentActivity() {
         Scaffold(containerColor = BG, bottomBar = {
             NavigationBar(containerColor = PANEL, tonalElevation = 0.dp) {
                 TABS.forEach { (k, label) ->
-                    NavigationBarItem(tab == k.first, { tab = k.first }, icon = { Text(k.second, fontSize = 18.sp) }, label = { Text(label) },
+                    NavigationBarItem(tab == k.first, { tab = k.first }, icon = { Text(k.second, fontSize = 20.sp) }, label = { Text(label) }, alwaysShowLabel = false,
                         colors = NavigationBarItemDefaults.colors(indicatorColor = SELECTED, selectedTextColor = TEXT, unselectedTextColor = DIM))
                 }
             }
@@ -246,41 +265,42 @@ class MainActivity : ComponentActivity() {
     private fun Card(m: Modifier = Modifier, content: @Composable () -> Unit) =
         Box(m.clip(RoundedCornerShape(16.dp)).background(PANEL).padding(16.dp)) { content() }
 
+    /** Botón de solo icono: tocar = acción; mantener pulsado = dice qué hace (como el tooltip del escritorio).
+     *  kind: "" discreto, "r" con fondo, "p" principal, "d" peligroso. `wide`: ocupa el ancho que le dé `m` (en vez de ser cuadrado). */
+    @OptIn(ExperimentalFoundationApi::class)
     @Composable
-    private fun Pill(text: String, m: Modifier = Modifier, onClick: () -> Unit) =
-        OutlinedButton(onClick, m, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, LINE), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
-            colors = ButtonDefaults.outlinedButtonColors(containerColor = RAISED, contentColor = TEXT)) { Text(text, maxLines = 1) }
+    private fun IconBtn(glyph: String, tip: String, m: Modifier = Modifier, kind: String = "", size: Dp = 44.dp, on: Boolean = false, wide: Boolean = false, onClick: () -> Unit) {
+        val bg = when { on -> SELECTED; kind == "p" -> ACCENT; kind == "r" -> RAISED; else -> Color.Transparent }
+        Box((if (wide) m.height(size) else m.size(size)).clip(RoundedCornerShape(12.dp)).background(bg)
+            .combinedClickable(onClick = onClick, onLongClick = { toast(tip) }).semantics { contentDescription = tip }, contentAlignment = Alignment.Center) {
+            Text(glyph, color = when (kind) { "d" -> DANGER; "p" -> Color.White; else -> TEXT }, fontSize = (size.value * 0.42f).sp)
+        }
+    }
 
-    @Composable
-    private fun Primary(text: String, m: Modifier = Modifier, onClick: () -> Unit) =
-        Button(onClick, m.height(48.dp), shape = RoundedCornerShape(12.dp)) { Text(text, fontWeight = FontWeight.SemiBold) }
-
-    /** CareView: barras finas (rojas bajo 25) y acciones en píldoras. */
+    /** CareView: barras finas (rojas bajo 25) y acciones como iconos (mantener pulsado dice cuál es). */
     @Composable
     private fun CareTab(tick: androidx.compose.runtime.MutableLongState) {
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            H1(remember(charVersion) { charName() })
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) { H1(remember(charVersion) { charName() }) }
+                IconBtn(if (floating) "✕" else "👻", if (floating) "Quitar mascota flotante" else "Mascota flotante", kind = if (floating) "r" else "p") { toggleFloat() }
+            }
             Pet(tick, Modifier.weight(1f).fillMaxWidth())
             Card(Modifier.fillMaxWidth()) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Care.NAMES.forEachIndexed { i, n ->
+                    Care.NAMES.forEachIndexed { i, _ ->
                         val v = care.stats[i]
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(Care.ICONS[i], Modifier.width(26.dp))
-                            Text(n, Modifier.width(84.dp), color = DIM, fontSize = 13.sp)
+                            Text(Care.ICONS[i], Modifier.width(32.dp))
                             LinearProgressIndicator(progress = { (v / 100).toFloat() }, Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(4.dp)),
                                 color = if (v < 25) DANGER else ACCENT, trackColor = RAISED, strokeCap = StrokeCap.Round, gapSize = 0.dp, drawStopIndicator = {})
                         }
                     }
                 }
             }
-            Care.ACTIONS.chunked(3).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    row.forEach { a -> Pill("${a.icon}  ${a.label}", Modifier.weight(1f)) { care.act(a); play = Play(a.anim, 3000) } }
-                    repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
-                }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Care.ACTIONS.forEach { a -> IconBtn(a.icon, a.label, Modifier.weight(1f), kind = "r", size = 52.dp, wide = true) { care.act(a); play = Play(a.anim, 3000) } }
             }
-            Primary(if (floating) "Quitar mascota flotante" else "Mascota flotante", Modifier.fillMaxWidth()) { toggleFloat() }
         }
     }
 
@@ -300,6 +320,17 @@ class MainActivity : ComponentActivity() {
             val msg = raw.trim()
             if (msg.isEmpty() || busy) return
             if (VoiceService.isNewChat(msg)) { chat.clear(); text = ""; imgs = emptyList(); return }  // «nuevo chat»
+            if (imgs.isEmpty()) Link.parse(this@MainActivity, msg)?.let { (to, order) ->  // «dile a la PC que…»: la ejecuta el otro equipo
+                text = ""
+                chat.add(true to msg)
+                scope.launch {
+                    chat.add(false to withContext(Dispatchers.IO) {
+                        try { "📲 Se lo mandé a ${to.ifEmpty { "tu otro equipo" }} (por ${Link.send(this@MainActivity, "task", order, to)}). Te aviso cuando responda." }
+                        catch (e: Exception) { "📲 No pude mandarlo: ${e.message}" }
+                    })
+                }
+                return
+            }
             text = ""
             busy = true
             sent = imgs
@@ -344,7 +375,7 @@ class MainActivity : ComponentActivity() {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Pet(tick, Modifier.size(84.dp))  // pequeña: en el teléfono la conversación necesita la pantalla
             Text(remember(charVersion) { charName() }, Modifier.weight(1f).padding(start = 8.dp), fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-            Pill("＋ Nuevo chat") { if (!busy) { chat.clear(); text = ""; imgs = emptyList() } }
+            IconBtn("＋", "Nuevo chat", kind = "r") { if (!busy) { chat.clear(); text = ""; imgs = emptyList() } }
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), list, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (chat.isEmpty()) item { Text("Dile algo a ${charName()} 👋", color = DIM) }
@@ -358,8 +389,10 @@ class MainActivity : ComponentActivity() {
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             // clic = adjuntar imágenes; si ya hay, las quita
-            Pill(if (imgs.isEmpty()) "📎" else "📎 ${imgs.size}") { if (imgs.isEmpty()) picker.launch(arrayOf("image/*")) else imgs = emptyList() }
-            Pill("🎙") {
+            IconBtn(if (imgs.isEmpty()) "📎" else "✓", if (imgs.isEmpty()) "Adjuntar imágenes" else "${imgs.size} imagen(es): toca para quitarlas", kind = "r") {
+                if (imgs.isEmpty()) picker.launch(arrayOf("image/*")) else imgs = emptyList()
+            }
+            IconBtn("🎙", "Dictar una orden", kind = "r") {
                 try {
                     mic.launch(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                         .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-MX"))
@@ -384,14 +417,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** CharactersView: lista de personajes (● = activo); tocar uno lo activa y ⋮ abre sus acciones (animaciones, editar, exportar, eliminar).
-     *  Importar no quita a los demás. */
+    /** CharactersView: catálogo de personajes en cards; tocar el personaje lo activa y bajo su nombre van sus acciones como iconos
+     *  (animaciones, editar, exportar, eliminar). Importar no quita a los demás. */
     @Composable
     private fun androidx.compose.foundation.layout.ColumnScope.CharsTab(tick: androidx.compose.runtime.MutableLongState) {
         val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) try {
                 val id = contentResolver.openInputStream(uri)!!.use { importZip(it) }
-                if (listChars().size == 1) useChar(id) else { charVersion++; toast("Importado: ${listChars()[id]} · tócalo para usarlo") }
+                if (listChars().size == 1) useChar(id) else { charVersion++; toast("Importado: ${listChars()[id]}") }
             } catch (e: Exception) {
                 toast("No se pudo importar: ${e.message}")
             }
@@ -415,45 +448,42 @@ class MainActivity : ComponentActivity() {
             BackHandler { catalog = null }
             return CatalogScreen(id, tick) { catalog = null }
         }
-        H1("Personajes")
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            if (chars.isEmpty()) Text("No hay personajes. Importa un .zip exportado desde el escritorio.", color = DIM)
-            chars.forEach { (id, name) ->
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Box(Modifier.weight(1f)) { H1("Personajes") }
+            IconBtn("⇪", "Importar (.zip)") { picker.launch(arrayOf("*/*")) }
+            IconBtn("＋", "Nuevo personaje", kind = "p") { creating = true }
+        }
+        LazyVerticalGrid(GridCells.Adaptive(150.dp), Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            gridItems(chars.toList()) { (id, name) ->
                 val on = id == active
-                var open by remember { mutableStateOf(false) }
-                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (on) SELECTED else Color.Transparent)
-                    .clickable(enabled = !on) { useChar(id) }.padding(start = 14.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(name, Modifier.weight(1f), fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal)
-                    Text(if (on) "● activo" else "Usar", color = if (on) ACCENT else DIM, fontSize = 12.sp)
-                    Box {
-                        Text("⋮", Modifier.clickable { open = true }.padding(horizontal = 18.dp, vertical = 8.dp), color = TEXT, fontSize = 20.sp)
-                        DropdownMenu(open, { open = false }, containerColor = RAISED) {
-                            listOf("🎬  Animaciones" to { catalog = id }, "✎  Editar" to { editing = id },
-                                "⇪  Exportar (.zip)" to { exporting = id; saver.launch("$id.zip") }, "🗑  Eliminar" to { deleting = id }).forEach { (t, fn) ->
-                                DropdownMenuItem({ Text(t) }, { open = false; fn() })
-                            }
-                        }
+                val sp = remember(id, charVersion) { Sprite().also { it.load(File(charsDir(this@MainActivity), id)); it.start("idle") } }
+                Column(Modifier.clip(RoundedCornerShape(16.dp)).background(PANEL).border(1.dp, if (on) ACCENT else LINE, RoundedCornerShape(16.dp)).padding(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Pet(tick, Modifier.size(96.dp).clickable(enabled = !on) { useChar(id) }, sp)
+                    Text(name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    Row {
+                        IconBtn("🎬", "Animaciones", size = 32.dp) { catalog = id }
+                        IconBtn("✎", "Editar", size = 32.dp) { editing = id }
+                        IconBtn("⇪", "Exportar (.zip)", size = 32.dp) { exporting = id; saver.launch("$id.zip") }
+                        IconBtn("🗑", "Eliminar", kind = "d", size = 32.dp) { deleting = id }
                     }
                 }
             }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Primary("＋ Nuevo", Modifier.weight(1f)) { creating = true }
-            Primary("Importar (.zip)", Modifier.weight(1f)) { picker.launch(arrayOf("*/*")) }
         }
         if (creating) NewCharDialog { creating = false }
         editing?.let { EditCharDialog(it) { editing = null } }
         deleting?.let { id ->
             AlertDialog(onDismissRequest = { deleting = null }, containerColor = PANEL,
-                title = { Text("Eliminar personaje") },
-                text = { Text("¿Eliminar a ${chars[id] ?: id}? No se puede deshacer.") },
-                confirmButton = { TextButton({ deleteChar(id); deleting = null }) { Text("Eliminar", color = Color(0xFFF07178)) } },
-                dismissButton = { TextButton({ deleting = null }) { Text("Cancelar", color = DIM) } })
+                title = { Text("¿Eliminar a ${chars[id] ?: id}?") },
+                confirmButton = { IconBtn("🗑", "Eliminar", kind = "d") { deleteChar(id); deleting = null } },
+                dismissButton = { IconBtn("✕", "Cancelar") { deleting = null } })
         }
     }
 
-    /** CatalogView: animaciones del personaje (las que tiene y las que le faltan), vista previa, fps y modo al vuelo (como sprites.set_meta),
-     *  probar en la mascota flotante y eliminar (dos toques). */
+    /** AnimsView + CatalogView: cuadrícula de cards con la miniatura en movimiento de cada animación (las que tiene y las que le faltan).
+     *  Tocar una abre su detalle (vista previa, fps y modo al vuelo como sprites.set_meta, probar en la mascota flotante, eliminar);
+     *  mantener pulsada una, o el icono de selección, marca varias (todo / nada / invertir) para eliminarlas. Generar varias es solo de escritorio. */
+    @OptIn(ExperimentalFoundationApi::class)
     @Composable
     private fun androidx.compose.foundation.layout.ColumnScope.CatalogScreen(id: String, tick: androidx.compose.runtime.MutableLongState, onBack: () -> Unit) {
         val f = File(File(charsDir(this@MainActivity), id), "character.json")
@@ -463,6 +493,11 @@ class MainActivity : ComponentActivity() {
         val names = remember(id, ver) { anims.keys().asSequence().sortedBy { Sprite.label(it) }.toList() + Sprite.WANTED.keys.filter { !anims.has(it) } }
         var sel by remember(id) { mutableStateOf(names.firstOrNull() ?: "") }
         var arm by remember { mutableStateOf(false) }
+        var detail by remember(id) { mutableStateOf<String?>(null) }
+        var selecting by remember(id) { mutableStateOf(false) }
+        var picked by remember(id) { mutableStateOf(setOf<String>()) }
+        var armDel by remember { mutableStateOf(false) }
+        LaunchedEffect(picked) { armDel = false }
         val a = anims.optJSONObject(sel)
         val prev = remember { Sprite() }
         LaunchedEffect(id, ver, sel) { prev.load(f.parentFile!!); if (a != null) prev.start(sel); arm = false }
@@ -475,63 +510,87 @@ class MainActivity : ComponentActivity() {
             reloadFloat()
         }
 
+        if (detail == null) {
+            BackHandler(enabled = selecting) { selecting = false; picked = emptySet() }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconBtn("‹", "Atrás") { onBack() }
+                Box(Modifier.weight(1f)) { if (selecting) Text("${picked.size}", color = DIM, fontSize = 16.sp) else H1(j.optString("name", id)) }
+                if (selecting) {
+                    IconBtn("☑", "Seleccionar todo", size = 40.dp) { picked = names.toSet() }
+                    IconBtn("☐", "Deseleccionar todo", size = 40.dp) { picked = emptySet() }
+                    IconBtn("⇄", "Invertir selección", size = 40.dp) { picked = names.toSet() - picked }
+                    if (picked.any { anims.has(it) }) IconBtn(if (armDel) "✓" else "🗑", if (armDel) "¿Seguro? Toca otra vez" else "Eliminar seleccionadas", kind = "d", size = 40.dp) {
+                        if (!armDel) { armDel = true; return@IconBtn }  // confirmación en dos toques, como el escritorio
+                        val gone = picked.filter { anims.has(it) }
+                        gone.forEach { anims.remove(it) }
+                        f.writeText(j.toString(1))
+                        toast("${gone.size} eliminada(s)")
+                        picked = emptySet()
+                        ver++
+                        charVersion++
+                        reloadFloat()
+                    }
+                }
+                IconBtn(if (selecting) "✕" else "☑", if (selecting) "Salir de la selección" else "Seleccionar", size = 40.dp) { selecting = !selecting; if (!selecting) picked = emptySet() }
+            }
+            LazyVerticalGrid(GridCells.Adaptive(104.dp), Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                gridItems(names) { n ->
+                    val have = anims.optJSONObject(n) != null
+                    val on = n in picked
+                    val sp = remember(id, ver, n) { Sprite().also { if (have) { it.load(f.parentFile!!); it.start(n) } } }
+                    Column(Modifier.clip(RoundedCornerShape(16.dp)).background(PANEL).border(1.dp, if (on) ACCENT else LINE, RoundedCornerShape(16.dp))
+                        .combinedClickable(onClick = { if (selecting) picked = if (on) picked - n else picked + n else { sel = n; detail = n } },
+                            onLongClick = { selecting = true; picked = picked + n }).padding(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Box(Modifier.size(80.dp), contentAlignment = Alignment.Center) { if (have) Pet(tick, Modifier.fillMaxSize(), sp) else Text("—", color = DIM) }
+                        Text(Sprite.label(n), fontSize = 12.sp, maxLines = 1, color = if (have) TEXT else DIM)
+                    }
+                }
+            }
+            return
+        }
+        BackHandler { detail = null }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("‹", Modifier.clickable { onBack() }.padding(end = 14.dp), fontSize = 26.sp)
-            H1("Animaciones · ${j.optString("name", id)}")
+            IconBtn("‹", "Atrás") { detail = null }
+            H1(j.optString("name", id))
         }
         Card(Modifier.fillMaxWidth().height(170.dp)) {
             if (a != null) Pet(tick, Modifier.fillMaxSize(), prev)
-            else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Aún no tiene esta animación", color = DIM) }
+            else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("—", color = DIM) }
         }
-        val w = Sprite.WANTED[sel]
-        Text(Sprite.label(sel), fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-        Text(if (a != null) "${a.optInt("frames")} cuadro${if (a.optInt("frames") != 1) "s" else ""}${if (w != null) " · $w" else ""}"
-            else "${(w ?: "").replaceFirstChar { it.uppercase() }}. Mientras tanto usa «${Sprite.label(Sprite.FALLBACK[sel] ?: "idle")}».", color = DIM, fontSize = 13.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(Sprite.label(sel), Modifier.weight(1f), fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            Text((Sprite.WANTED[sel] ?: "").replaceFirstChar { it.uppercase() }, color = DIM, fontSize = 12.sp, maxLines = 1)
+        }
         if (a != null) {
             val fps = a.optInt("fps", 8)
             val mode = if (a.optBoolean("pingpong")) "pingpong" else if (a.optBoolean("loop", true)) "loop" else "once"
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Pill("−", Modifier.width(52.dp)) { save(fps - 1, mode) }
-                Text("$fps fps", Modifier.width(56.dp), fontSize = 14.sp)
-                Pill("+", Modifier.width(52.dp)) { save(fps + 1, mode) }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {  // en el teléfono no caben junto a los fps
-                listOf("loop" to "bucle", "pingpong" to "ida y vuelta", "once" to "una vez").forEach { (m, t) ->
-                    Text(t, Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).background(if (m == mode) SELECTED else RAISED).clickable { save(fps, m) }
-                        .padding(vertical = 10.dp), color = if (m == mode) TEXT else DIM, fontSize = 13.sp, maxLines = 1,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                IconBtn("−", "Menos fps", kind = "r", size = 40.dp) { save(fps - 1, mode) }
+                Text("$fps fps", Modifier.width(56.dp), fontSize = 14.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                IconBtn("+", "Más fps", kind = "r", size = 40.dp) { save(fps + 1, mode) }
+                Spacer(Modifier.weight(1f))
+                listOf(Triple("loop", "🔁", "En bucle"), Triple("pingpong", "⇄", "Ida y vuelta"), Triple("once", "①", "Una vez")).forEach { (m, g, tip) ->
+                    IconBtn(g, tip, on = m == mode, size = 40.dp) { save(fps, m) }
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Primary("▶  Probar en la mascota", Modifier.weight(1f)) {
-                    if (!OverlayService.running) return@Primary toast("Activa la mascota flotante (pestaña Cuidar)")
-                    if (id != dir().name) return@Primary toast("Usa primero este personaje")
+                IconBtn("▶", "Probar en la mascota", kind = "p") {
+                    if (!OverlayService.running) return@IconBtn toast("Activa la mascota flotante (pestaña Cuidar)")
+                    if (id != dir().name) return@IconBtn toast("Usa primero este personaje")
                     startService(Intent(this@MainActivity, OverlayService::class.java).setAction(OverlayService.PREVIEW).putExtra("anim", sel))
                 }
-                OutlinedButton({
-                    if (!arm) { arm = true; return@OutlinedButton }  // confirmación en dos toques, como el escritorio
+                IconBtn(if (arm) "✓" else "🗑", if (arm) "¿Seguro? Toca otra vez" else "Eliminar", kind = "d") {
+                    if (!arm) { arm = true; return@IconBtn }  // confirmación en dos toques, como el escritorio
                     anims.remove(sel)
                     f.writeText(j.toString(1))
                     toast("«${Sprite.label(sel)}» eliminada")
                     ver++
                     charVersion++
                     reloadFloat()
-                }, Modifier.height(48.dp), shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, DANGER)) {
-                    Text(if (arm) "¿Seguro?" else "Eliminar", color = DANGER)
                 }
             }
         }
-        LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-            items(names) { n ->
-                val have = anims.optJSONObject(n)
-                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (n == sel) SELECTED else Color.Transparent)
-                    .clickable { sel = n }.padding(horizontal = 14.dp, vertical = 11.dp)) {
-                    Text(Sprite.label(n), Modifier.weight(1f), color = if (have != null) TEXT else DIM)
-                    Text(have?.optInt("frames")?.toString() ?: "—", color = DIM, fontSize = 13.sp)
-                }
-            }
-        }
-        Text("Generar o reemplazar animaciones se hace en el escritorio; luego exporta e importa el .zip.", color = DIM, fontSize = 11.sp)
     }
 
     /** Edita nombre, descripción, identidad y anatomía en character.json (se conservan los demás campos, como sprites.set_profile). */
@@ -551,25 +610,25 @@ class MainActivity : ComponentActivity() {
                         Triple("Celda (ancho×alto)", size) { v: String -> size = v }))
                         OutlinedTextField(value, set, Modifier.fillMaxWidth(), label = { Text(label) }, singleLine = label != "Descripción visual",
                             shape = RoundedCornerShape(12.dp), colors = fieldColors())
-                    Pill(if (img == null) "Elegir imagen general (opcional)…" else "✓ Imagen general elegida", Modifier.fillMaxWidth()) { pick.launch(arrayOf("image/*")) }
+                    IconBtn(if (img == null) "🖼" else "✓", "Imagen general (opcional)", kind = "r") { pick.launch(arrayOf("image/*")) }
                 }
             },
             confirmButton = {
-                TextButton({
-                    if (name.isBlank()) return@TextButton toast("Ponle un nombre")
+                IconBtn("✓", "Crear", kind = "p") {
+                    if (name.isBlank()) return@IconBtn toast("Ponle un nombre")
                     val cell = size.lowercase().split("x", "×").mapNotNull { it.trim().toIntOrNull() }
-                    if (cell.size != 2) return@TextButton toast("El tamaño debe verse así: 192x208")
+                    if (cell.size != 2) return@IconBtn toast("El tamaño debe verse así: 192x208")
                     try {
                         val id = createChar(name.trim(), desc.trim(), cell, img)
                         if (listChars().size == 1) useChar(id) else charVersion++
-                        toast("Creado: ${name.trim()} · sus animaciones se agregan desde el escritorio")
+                        toast("Creado: ${name.trim()}")
                         onClose()
                     } catch (e: Exception) {
                         toast("No se pudo crear: ${e.message}")
                     }
-                }) { Text("Crear") }
+                }
             },
-            dismissButton = { TextButton(onClose) { Text("Cancelar", color = DIM) } })
+            dismissButton = { IconBtn("✕", "Cancelar", onClick = onClose) })
     }
 
     /** Como sprites.create + set_source: character.json (se conservan los demás campos si ya existía), brief.md y source.png opcional. */
@@ -626,11 +685,11 @@ class MainActivity : ComponentActivity() {
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     // imagen general y hoja neutral (en escritorio, misma vista «Editar personaje»); la hoja neutral se genera en escritorio
-                    Pill(if (hasSrc) "✓ Imagen general · cambiar…" else "Cargar imagen general…", Modifier.fillMaxWidth()) { pick.launch(arrayOf("image/*")) }
-                    Text("Género (voz)", color = DIM, fontSize = 13.sp)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        for ((k, label) in listOf("" to "Sin definir", "masculino" to "Masculino", "femenino" to "Femenino"))
-                            Pill(if (gender == k) "✓ $label" else label, Modifier.weight(1f)) { gender = k }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconBtn(if (hasSrc) "✓" else "🖼", "Imagen general", kind = "r") { pick.launch(arrayOf("image/*")) }
+                        Spacer(Modifier.weight(1f))
+                        for ((k, g, tip) in listOf(Triple("", "∅", "Voz del sistema"), Triple("masculino", "♂", "Voz masculina"), Triple("femenino", "♀", "Voz femenina")))
+                            IconBtn(g, tip, on = gender == k) { gender = k }
                     }
                     keys.forEachIndexed { i, (_, label) ->
                         OutlinedTextField(values[i].value, { values[i].value = it }, Modifier.fillMaxWidth(), label = { Text(label) }, singleLine = i == 0,
@@ -638,25 +697,25 @@ class MainActivity : ComponentActivity() {
                         if (i == 3) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (working.isNotEmpty()) Text(working, color = DIM)
                             else {
-                                Pill("🌐 Buscar en la red", Modifier.weight(1f)) { persona(false) }
-                                Pill("📖 De la historia", Modifier.weight(1f)) { persona(true) }
+                                IconBtn("🌐", "Buscar la personalidad en la red", kind = "r") { persona(false) }
+                                IconBtn("📖", "Sacar la personalidad de la historia", kind = "r") { persona(true) }
                             }
                         }
                     }
                 }
             },
             confirmButton = {
-                TextButton({
+                IconBtn("✓", "Guardar", kind = "p") {
                     val name = values[0].value.trim()
-                    if (name.isEmpty()) return@TextButton toast("El nombre no puede estar vacío")
+                    if (name.isEmpty()) return@IconBtn toast("El nombre no puede estar vacío")
                     keys.forEachIndexed { i, (k, _) -> j.put(k, values[i].value.trim()) }
                     j.put("gender", gender)
                     f.writeText(j.toString(1))
                     charVersion++
                     onClose()
-                }) { Text("Guardar") }
+                }
             },
-            dismissButton = { TextButton(onClose) { Text("Cancelar", color = DIM) } })
+            dismissButton = { IconBtn("✕", "Cancelar", onClick = onClose) })
     }
 
     /** Ajustes de IA por API (en Android no hay binarios claude/codex). Mismas claves que Ai.kt. */
@@ -671,54 +730,144 @@ class MainActivity : ComponentActivity() {
         val values = remember { fields.map { (w, k, _) -> mutableStateOf(ai.p.getString("${w}_$k", "")!!) } }
         val app = remember { getSharedPreferences("app", MODE_PRIVATE) }
         var scale by remember { mutableStateOf(app.getFloat("scale", 0.6f)) }
-        H1("Ajustes")
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Section("Mascota")  // tamaño de la mascota flotante, como «Tamaño» del escritorio (store "scale", 30–120 %)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Tamaño", Modifier.width(70.dp), color = DIM, fontSize = 13.sp)
-                Slider(scale, { scale = it }, Modifier.weight(1f), valueRange = 0.3f..1.2f,
-                    onValueChangeFinished = { app.edit().putFloat("scale", (scale * 100).toInt() / 100f).apply(); reloadFloat() },
-                    colors = SliderDefaults.colors(thumbColor = ACCENT, activeTrackColor = ACCENT, inactiveTrackColor = RAISED))
-                Text("${(scale * 100).toInt()}%", Modifier.width(48.dp), color = DIM, fontSize = 13.sp)
-            }
-            Spacer(Modifier.height(8.dp))
-            fields.forEachIndexed { i, (w, k, hint) ->
-                if (i == 0) Section("Chat por API")
-                if (i == 4) { Spacer(Modifier.height(8.dp)); Section("Imágenes por API") }
-                val secret = k == "key"
-                OutlinedTextField(values[i].value, { values[i].value = it }, Modifier.fillMaxWidth(), label = { Text(hint) }, singleLine = true,
-                    shape = RoundedCornerShape(12.dp), colors = fieldColors(),
-                    visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
-                    keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else KeyboardType.Text))
-            }
+        val lk = remember { Link.conf(this@MainActivity) }
+        var lCode by remember { mutableStateOf(lk.code) }
+        var lName by remember { mutableStateOf(lk.name) }
+        var lRelay by remember { mutableStateOf(lk.relay.ifEmpty { if (ai.p.getString("chat_kind", "") == "server") ai.p.getString("chat_url", "")!! else "" }) }
+        var lAccept by remember { mutableStateOf(lk.accept) }
+        var lJoin by remember { mutableStateOf("") }
+        var lState by remember { mutableStateOf("") }
+        val scope = rememberCoroutineScope()
+        LaunchedEffect(lCode) { while (true) { lState = Link.status(this@MainActivity); delay(2000) } }
+        fun saveLink() {  // guarda nombre, enlace, código y modo de aceptación, y (re)inicia el servicio
+            Link.save(this@MainActivity, code = lCode, name = lName.trim(), relay = lRelay.trim(), accept = lAccept)
+            if (lCode.isNotEmpty()) startLink()
         }
-        // botón lateral / gesto del asistente: Fruquis como «App de asistente digital» (AssistActivity); no hay escucha continua del nombre
-        Primary("🎙 Usar como asistente del teléfono", Modifier.fillMaxWidth()) {
-            if (checkSelfPermission("android.permission.RECORD_AUDIO") != PackageManager.PERMISSION_GRANTED)
-                requestPermissions(arrayOf("android.permission.RECORD_AUDIO"), 3)
-            toast("Elige Fruquis en «App de asistente digital»")
-            startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
+        val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) scope.launch {
+                toast(withContext(Dispatchers.IO) {
+                    try {
+                        val name = contentResolver.query(uri, null, null, null, null)?.use { q ->
+                            if (q.moveToFirst()) q.getString(q.getColumnIndexOrThrow(android.provider.OpenableColumns.DISPLAY_NAME)) else null } ?: "archivo"
+                        val bytes = contentResolver.openInputStream(uri)!!.use { it.readBytes() }
+                        "📤 «$name» enviado (por ${Link.sendFile(this@MainActivity, name, bytes)})"
+                    } catch (e: Exception) { "📤 No pude enviarlo: ${e.message}" }
+                })
+            }
         }
         var speak by remember { mutableStateOf(Speech.on(this@MainActivity)) }
-        Pill(if (speak) "🔊 Responde con voz: sí" else "🔇 Responde con voz: no", Modifier.fillMaxWidth()) {  // como «Responder también con voz» del escritorio
-            speak = !speak
-            app.edit().putBoolean("speak", speak).apply()
-            if (!speak) tts?.stop()
-        }
         var control by remember { mutableStateOf(app.getBoolean("control", false)) }
-        Pill(if (control) "📱 Controla el teléfono: sí" else "📱 Controlar el teléfono", Modifier.fillMaxWidth()) {  // como «Controlar» del escritorio
-            control = !control
-            app.edit().putBoolean("control", control).apply()
-            if (control && PhoneService.instance == null) {  // el servicio de accesibilidad se activa a mano en Ajustes del sistema
-                toast("Activa «Fruquis» en Accesibilidad. Si sale gris: Info de la app › ⋮ › Permitir ajustes restringidos")
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) { H1("Ajustes") }
+            IconBtn("✓", "Guardar", kind = "p") {
+                ai.p.edit().apply { fields.forEachIndexed { i, (w, k, _) -> putString("${w}_$k", values[i].value.trim()) } }.apply()
+                saveLink()
+                toast("Ajustes guardados")
             }
         }
-        Primary("Guardar", Modifier.fillMaxWidth()) {
-            ai.p.edit().apply { fields.forEachIndexed { i, (w, k, _) -> putString("${w}_$k", values[i].value.trim()) } }.apply()
-            toast("Ajustes guardados")
+        // grupos plegables: la pantalla es una lista corta de cards y solo se abre lo que se necesita
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Group("🐾", "Mascota") {  // tamaño de la mascota flotante, como «Tamaño» del escritorio (store "scale", 30–120 %)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Slider(scale, { scale = it }, Modifier.weight(1f), valueRange = 0.3f..1.2f,
+                        onValueChangeFinished = { app.edit().putFloat("scale", (scale * 100).toInt() / 100f).apply(); reloadFloat() },
+                        colors = SliderDefaults.colors(thumbColor = ACCENT, activeTrackColor = ACCENT, inactiveTrackColor = RAISED))
+                    Text("${(scale * 100).toInt()}%", Modifier.width(48.dp), color = DIM, fontSize = 13.sp)
+                }
+            }
+            Group("🎙", "Asistente") {
+                SwitchRow("Responder con voz", speak) {  // como «Responder con voz» del escritorio
+                    speak = it
+                    app.edit().putBoolean("speak", speak).apply()
+                    if (!speak) tts?.stop()
+                }
+                SwitchRow("Controlar el teléfono", control) {  // como «Controlar» del escritorio
+                    control = it
+                    app.edit().putBoolean("control", control).apply()
+                    if (control && PhoneService.instance == null) {  // el servicio de accesibilidad se activa a mano en Ajustes del sistema
+                        toast("Activa «Fruquis» en Accesibilidad. Si sale gris: Info de la app › ⋮ › Permitir ajustes restringidos")
+                        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {  // botón lateral / gesto del asistente: Fruquis como «App de asistente digital» (AssistActivity)
+                    Text("Asistente del teléfono", Modifier.weight(1f))
+                    IconBtn("⚙", "Elegir Fruquis como asistente del teléfono", kind = "r", size = 40.dp) {
+                        if (checkSelfPermission("android.permission.RECORD_AUDIO") != PackageManager.PERMISSION_GRANTED)
+                            requestPermissions(arrayOf("android.permission.RECORD_AUDIO"), 3)
+                        toast("Elige Fruquis en «App de asistente digital»")
+                        startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
+                    }
+                }
+            }
+            Group("💬", "Chat (API)") { for (i in 0..3) ApiField(values[i], fields[i].third, fields[i].second == "key") }
+            Group("🖼", "Imágenes (API)") { for (i in 4..7) ApiField(values[i], fields[i].third, fields[i].second == "key") }
+            Group("🔗", "Otro equipo") {  // Link.kt: mismo código en los dos; en la misma red se conectan solos, entre redes hace falta el enlace del servidor aipi
+                Text(if (lCode.isEmpty()) "Sin vincular" else "Código: ${Link.showCode(lCode)}", fontWeight = FontWeight.SemiBold)
+                OutlinedTextField(lName, { lName = it }, Modifier.fillMaxWidth(), label = { Text("Nombre de este equipo") }, singleLine = true,
+                    shape = RoundedCornerShape(12.dp), colors = fieldColors())
+                OutlinedTextField(lRelay, { lRelay = it }, Modifier.fillMaxWidth(), label = { Text("Enlace del servidor aipi (?key=…) · vacío = misma red") }, singleLine = true,
+                    shape = RoundedCornerShape(12.dp), colors = fieldColors())
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconBtn(when (lAccept) { "auto" -> "⚡"; "off" -> "⛔"; else -> "❓" },
+                        when (lAccept) { "auto" -> "Sus órdenes se ejecutan sin preguntar"; "off" -> "No acepto órdenes del otro equipo"; else -> "Pregunto antes de ejecutar sus órdenes" }, kind = "r") {
+                        lAccept = when (lAccept) { "ask" -> "auto"; "auto" -> "off"; else -> "ask" }
+                    }
+                    IconBtn("＋", "Crear vínculo nuevo", kind = "p") {
+                        lCode = Link.newCode()
+                        saveLink()
+                        toast("Escribe ese código en el otro equipo")
+                    }
+                    if (lCode.isNotEmpty()) {
+                        IconBtn("⇪", "Enviar un archivo al otro equipo", kind = "r") { filePicker.launch(arrayOf("*/*")) }
+                        IconBtn("✕", "Desvincular", kind = "d") {
+                            Link.save(this@MainActivity, code = "")
+                            getSharedPreferences("link", MODE_PRIVATE).edit().remove("peers").apply()
+                            lCode = ""
+                            stopService(Intent(this@MainActivity, LinkService::class.java))
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(lJoin, { lJoin = it }, Modifier.weight(1f), label = { Text("Código del otro equipo") }, singleLine = true,
+                        shape = RoundedCornerShape(12.dp), colors = fieldColors())
+                    IconBtn("🔗", "Unirme con este código", kind = "r") {
+                        val code = Link.cleanCode(lJoin)
+                        if (code.length != 12) return@IconBtn toast("El código tiene 12 letras o números (ABCD-EFGH-JKMN)")
+                        lCode = code; lJoin = ""
+                        saveLink()
+                    }
+                }
+                if (lCode.isNotEmpty()) Text(lState, color = DIM, fontSize = 12.sp)
+            }
         }
     }
+
+    /** Card plegable: título con icono y, al tocarla, su contenido. */
+    @Composable
+    private fun Group(glyph: String, title: String, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+        var open by remember { mutableStateOf(false) }
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(PANEL)) {
+            Row(Modifier.fillMaxWidth().clickable { open = !open }.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(glyph, fontSize = 20.sp)
+                Text(title, Modifier.weight(1f).padding(start = 12.dp), fontWeight = FontWeight.SemiBold)
+                Text(if (open) "⌃" else "⌄", color = DIM)
+            }
+            if (open) Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { content() }
+        }
+    }
+
+    @Composable
+    private fun SwitchRow(label: String, on: Boolean, onChange: (Boolean) -> Unit) = Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f))
+        Switch(on, onChange, colors = SwitchDefaults.colors(checkedTrackColor = ACCENT, checkedThumbColor = Color.White))
+    }
+
+    @Composable
+    private fun ApiField(v: androidx.compose.runtime.MutableState<String>, hint: String, secret: Boolean) =
+        OutlinedTextField(v.value, { v.value = it }, Modifier.fillMaxWidth(), label = { Text(hint) }, singleLine = true,
+            shape = RoundedCornerShape(12.dp), colors = fieldColors(),
+            visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+            keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else KeyboardType.Text))
 
     @Composable
     private fun fieldColors() = OutlinedTextFieldDefaults.colors(focusedContainerColor = PANEL, unfocusedContainerColor = PANEL,

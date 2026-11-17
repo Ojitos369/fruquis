@@ -17,7 +17,9 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
     </queries>
-    <application android:label="Fruquis" android:icon="@mipmap/ic_launcher" android:theme="@android:style/Theme.Material.NoActionBar">
+    <!-- usesCleartextTraffic: el vínculo habla HTTP simple con el otro equipo dentro de la red local (IPs, sin certificado) -->
+    <application android:label="Fruquis" android:icon="@mipmap/ic_launcher" android:theme="@android:style/Theme.Material.NoActionBar"
+        android:usesCleartextTraffic="true">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -35,6 +37,9 @@
         </activity>
         <service android:name=".OverlayService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Mascota flotante sobre otras apps" />
+        </service>
+        <service android:name=".LinkService" android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Recibir órdenes y archivos de otro equipo vinculado" />
         </service>
         <service android:name=".VoiceService" android:exported="false" android:foregroundServiceType="microphone" />
         <service android:name=".ListenTile" android:exported="true" android:label="Escucha activa" android:icon="@drawable/ic_mic"
